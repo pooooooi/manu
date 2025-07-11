@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>注文ページ</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 1em;
+      background: #333;
+      color: white;
+      text-align: center;
+    }
+    .container {
+      display: flex;
+      flex: 1;
+    }
+    .menu-categories {
+      width: 30%;
+      background: #f8f8f8;
+      padding: 1em;
+      box-sizing: border-box;
+    }
+    .menu-categories button {
+      display: block;
+      width: 100%;
+      margin-bottom: 0.5em;
+      padding: 1em;
+      font-size: 1em;
+    }
+    .menu-items {
+      width: 70%;
+      padding: 1em;
+      box-sizing: border-box;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1em;
+    }
+    .menu-item {
+      width: calc(50% - 1em);
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 0.5em;
+      text-align: center;
+    }
+    .menu-item img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 8px;
+    }
+    #order-summary, #total, #confirmation {
+      padding: 1em;
+      text-align: center;
+    }
+    button {
+      font-size: 1.2em;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>注文ページ</h1>
+    <label>テーブル番号: <input type="text" id="table-number" placeholder="例: 5"></label>
+  </header>
+  <div class="container">
+    <div class="menu-categories">
+      <button onclick="showCategory('main')">メイン</button>
+      <button onclick="showCategory('side')">サイド</button>
+      <button onclick="showCategory('drink')">ドリンク</button>
+    </div>
+    <div class="menu-items" id="menu-items"></div>
+  </div>
+  <div id="order-summary"></div>
+  <div id="total"></div>
+  <div style="text-align:center">
+    <button id="submit-button" onclick="submitOrder()">注文を確定する</button>
+  </div>
+  <div id="confirmation">ご注文ありがとうございました！</div>
+
+  <script>
+    const menuData = {
+      main: [
+        { name: "ラーメン", price: 800, image: "picture/ramen.webp" },
+        { name: "チャーハン", price: 600, image: "https://via.placeholder.com/200?text=チャーハン" }
+      ],
+      side: [
+        { name: "唐揚げ", price: 500, image: "https://via.placeholder.com/200?text=唐揚げ" },
+        { name: "餃子", price: 400, image: "https://via.placeholder.com/200?text=餃子" }
+      ],
+      drink: [
+        { name: "ウーロン茶", price: 300, image: "https://via.placeholder.com/200?text=ウーロン茶" },
+        { name: "ビール", price: 550, image: "https://via.placeholder.com/200?text=ビール" }
+      ]
+    };
+
+    const order = JSON.parse(localStorage.getItem('order') || '{}');
+    showCategory('main');
+    updateOrderDisplay();
+
+    function showCategory(category) {
+      const menuContainer = document.getElementById('menu-items');
+      menuContainer.innerHTML = '';
+      menuData[category].forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'menu-item';
+        div.innerHTML = `
+          <img src="${item.image}" alt="${item.name}">
+          <h3>${item.name}</h3>
+          <p>${item.price}円</p>
+          <button onclick="addItem('${item.name}', ${item.price})">追加</button>
+        `;
+        menuContainer.appendChild(div);
+      });
+    }
+
+    function addItem(item, price) {
+      if (!order[item]) order[item] = { count: 0, price: price };
+      order[item].count++;
+      localStorage.setItem('order', JSON.stringify(order));
+      updateOrderDisplay();
+    }
+
+    function updateOrderDisplay() {
+      const summary = document.getElementById('order-summary');
+      const totalDiv = document.getElementById('total');
+      let html = '<strong>注文内容:</strong><ul>';
+      let total = 0;
+      for (const item in order) {
+        const entry = order[item];
+        html += `<li>${item} x${entry.count}（${entry.price * entry.count}円）</li>`;
+        total += entry.price * entry.count;
+      }
+      html += '</ul>';
+      summary.innerHTML = html;
+      totalDiv.innerHTML = `<strong>合計金額: ${total}円</strong>`;
+    }
+
+    function submitOrder() {
+      const tableNumber = document.getElementById('table-number').value;
+      if (!tableNumber) return alert("テーブル番号を入力してください。");
+      let orderContent = '';
+      let totalAmount = 0;
+      for (const item in order) {
+        orderContent += `${item} x${order[item].count}\n`;
+        totalAmount += order[item].count * order[item].price;
+      }
+
+      const formData = new FormData();
+      formData.append("entry.408172505", tableNumber);
+      formData.append("entry.1132597987", orderContent);
+      formData.append("entry.418961724", totalAmount);
+
+      const submitButton = document.getElementById('submit-button');
+      submitButton.disabled = true;
+
+      fetch("https://docs.google.com/forms/d/e/1FAIpQLScbYOi6dsyUuIXclTKtrr6DeeZMg_WYXzNCFELm5hay0hrx4g/formResponse", {
+        method: "POST",
+        mode: "no-cors",
+        body: formData
+      }).then(() => {
+        document.getElementById('confirmation').style.display = 'block';
+        localStorage.removeItem('order');
+        setTimeout(() => location.reload(), 3000);
+      });
+    }
+  </script>
+</body>
+</html>
