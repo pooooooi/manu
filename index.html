@@ -7,19 +7,20 @@
   <title>注文ページ</title>
   <style>
     header {
-    background-color: #333333;
-    color: white;
-    padding: 1em;
-    text-align: center;
-    font-size: 1.8em;
-    width: 100%;
-    margin: 0;
-    box-sizing: border-box;
-    margin-bottom: 1.5em; /* ← これが間隔 */
+      background-color: #222;     /* 薄めの黒 */
+      color: white;
+      padding: 1em;
+      text-align: center;
+      font-size: 1.8em;
+      width: 100%;                 /* すべての外側余白を一旦ゼロに */
+      margin-bottom: 1em;         /* 下だけ余白を加える */
+      box-sizing: border-box;
+      margin-top: 0 !important;
     }
     body {
+      margin: 0;
+      padding: 0;
       font-family: sans-serif;
-      margin: 20px;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -31,6 +32,7 @@
     #leftMenu {
       width: 180px;
       margin-right: 20px;
+      padding-left: 20px; /* ← これが左の余白 */
     }
     .category-buttons {
       display: flex;
@@ -38,9 +40,26 @@
       gap: 10px;
     }
     .category-buttons button {
+      width: 140px;
+      min-height: 40px;
       padding: 10px;
       font-size: 1em;
-      cursor: pointer;
+      border: 1px solid #ccc;
+      font-weight: normal;
+      color: #333;
+      background-color: #f0f0f0;
+      box-sizing: border-box;
+      transition: background-color 0.2s, color 0.2s;
+      text-align: center;
+    }
+    .category-buttons button:focus {
+      outline: none;        /* フォーカス時の青い枠を消す */
+      box-shadow: none;     /* ブラウザ独自の影も消す */
+    }
+    .category-buttons button.selected {
+      background-color: #4CAF50;
+      color: white;
+      font-weight: normal;         /* 選択時も太字にしない */
     }
     #menuContainer {
       display: flex;
@@ -81,7 +100,7 @@
         テーブル番号: <input type="text" id="tableNumber" placeholder="例: A1" />
       </div>
 
-      <div id="orderList" style="margin-top: 20px;">
+      <!--<div id="orderList" style="margin-top: 20px;">
         <h3>注文リスト</h3>
         <ul id="orderItems"></ul>
         <p>合計金額: <span id="totalPrice">0</span> 円</p>
@@ -90,6 +109,37 @@
       <button onclick="submitOrder()" style="padding: 10px 20px; margin-top: 10px;">
         注文を確定する
       </button>
+    </div>
+      -->
+    <button id="showOrderBtn" onclick="toggleOrderModal()" style="
+      position: fixed;        /* 固定位置にする */
+      bottom: 20px;           /* 下から20pxの位置 */
+      right: 20px;            /* 右から20pxの位置 */
+      padding: 10px 15px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      z-index: 1000;          /* 他要素より前面に出す */
+    ">
+      注文リストを見る
+    </button>
+    <div id="orderModal" style="
+      display: none;
+      position: fixed;
+      bottom: 80px;
+      right: 20px;
+      width: 300px;
+      background: white;
+      border: 1px solid #ccc;
+      padding: 15px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      z-index: 999;
+    ">
+      <h3>注文リスト</h3>
+      <ul id="orderItems"></ul>
+      <p>合計金額: <span id="totalPrice">0</span> 円</p>
+      <button onclick="submitOrder()">注文を確定する</button>
     </div>
   </div>
 
@@ -123,9 +173,12 @@
       categories.forEach(cat => {
         const btn = document.createElement("button");
         btn.textContent = cat;
+        btn.classList.add("category-btn");
         btn.onclick = () => {
           selectedCategory = cat;
           renderMenuItems();
+          document.querySelectorAll('.category-buttons button').forEach(b => b.classList.remove('selected'));
+          btn.classList.add('selected');
         };
         btnContainer.appendChild(btn);
       });
@@ -169,11 +222,32 @@
       let total = 0;
       Object.entries(orders).forEach(([name, { count, price }]) => {
         const li = document.createElement("li");
-        li.textContent = `${name} x ${count} = ${price * count} 円`;
+        li.innerHTML = `
+          ${name} x ${count} = ${price * count} 円
+          <button onclick="decreaseItem('${name}')">−</button>
+          <button onclick="removeItem('${name}')">削除</button>
+        `;
         total += price * count;
         list.appendChild(li);
       });
       document.getElementById("totalPrice").textContent = total;
+    }
+    function decreaseItem(name) {
+      if (orders[name]) {
+        orders[name].count--;
+        if (orders[name].count <= 0) {
+        delete orders[name];
+        }
+      renderOrder();
+      }
+    }
+    function removeItem(name) {
+      delete orders[name];
+      renderOrder();
+    }
+    function toggleOrderModal() {
+      const modal = document.getElementById("orderModal");
+      modal.style.display = modal.style.display === "none" ? "block" : "none";
     }
 
     function submitOrder() {
@@ -200,6 +274,8 @@
       });
 
       alert("注文を送信しました！");
+      Object.keys(orders).forEach(key => delete orders[key]); // 注文データをクリア
+      renderOrder(); // 表示を更新
     }
 
     window.onload = async () => {
