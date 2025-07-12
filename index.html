@@ -1,126 +1,180 @@
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>注文ページ</title>
   <style>
-    body { font-family: sans-serif; margin: 0; display: flex; flex-direction: row; height: 100vh; }
-    #categoryList {
-      width: 150px;
-      background: #f4f4f4;
-      padding: 10px;
-      box-sizing: border-box;
-      overflow-y: auto;
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
-    #categoryList button {
-      display: block;
-      width: 100%;
-      margin-bottom: 5px;
-      padding: 8px;
-      background: #fff;
-      border: 1px solid #ccc;
-      cursor: pointer;
-    }
-    #menuList {
-      flex: 1;
-      padding: 10px;
+    #menuContainer {
       display: flex;
       flex-wrap: wrap;
-      justify-content: flex-start;
-      align-content: flex-start;
-      overflow-y: auto;
-      box-sizing: border-box;
+      justify-content: center;
     }
-    .item {
-      width: 160px;
-      margin: 5px;
-      border: 1px solid #ddd;
-      border-radius: 5px;
-      overflow: hidden;
-      background: #fff;
+    .menuItem {
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 10px;
+      margin: 10px;
+      width: 150px;
       text-align: center;
+      cursor: pointer;
     }
-    .item img {
+    .menuItem img {
       width: 100%;
-      height: 100px;
-      object-fit: cover;
+      height: auto;
+      border-radius: 4px;
     }
-    .item h4 {
-      margin: 5px 0 0;
-      font-size: 16px;
+    .category-buttons {
+      margin-bottom: 10px;
     }
-    .item p {
-      margin: 5px 0;
-      font-size: 14px;
-    }
-    @media (max-width: 768px) {
-      body { flex-direction: column; }
-      #categoryList { width: 100%; display: flex; overflow-x: auto; }
-      #categoryList button { flex: 1; white-space: nowrap; }
-      #menuList { height: auto; }
+    .category-buttons button {
+      margin: 0 5px;
+      padding: 5px 10px;
     }
   </style>
 </head>
 <body>
-  <div id="categoryList">読み込み中...</div>
-  <div id="menuList"></div>
+  <h1>メニューから注文</h1>
+
+  <div class="category-buttons" id="categoryButtons"></div>
+
+  <div id="menuContainer"></div>
+
+  <div style="margin: 10px 0;">
+    テーブル番号: <input type="text" id="tableNumber" placeholder="例: A1" />
+  </div>
+
+  <div id="orderList" style="margin-top: 20px;">
+    <h3>注文リスト</h3>
+    <ul id="orderItems"></ul>
+    <p>合計金額: <span id="totalPrice">0</span> 円</p>
+  </div>
+
+  <button onclick="submitOrder()" style="padding: 10px 20px; margin-top: 10px;">
+    注文を確定する
+  </button>
 
   <script>
     const csvUrl = "https://docs.google.com/spreadsheets/d/1dNk8uLhzl06UJeIsMRYoyLd_MAoHuIpV-qqYIyf8ZS8/export?format=csv&gid=100058082";
 
+    let allMenuItems = [];
+    let selectedCategory = "";
+    const orders = {};
+
     async function loadCSV() {
       const res = await fetch(csvUrl);
       const text = await res.text();
-      const rows = text.trim().split('\n').map(r => r.split(','));
-      const headers = rows[0];
-      const data = rows.slice(1).map(r => Object.fromEntries(headers.map((h, i) => [h.trim(), r[i]?.trim()])));
-      return data;
-    }
 
-    function groupByCategory(data) {
-      const result = {};
-      data.forEach(item => {
-        const cat = item["カテゴリ"];
-        if (!result[cat]) result[cat] = [];
-        result[cat].push(item);
+      const rows = text.trim().split(/\r?\n/).map(r => r.split(','));
+      const headers = rows[0].map(h => h.trim().replace(/^"|"$/g, ''));
+      return rows.slice(1).map(r => {
+        const obj = {};
+        headers.forEach((h, i) => {
+          obj[h] = r[i]?.trim().replace(/^"|"$/g, '');
+        });
+        return obj;
       });
-      return result;
     }
 
-    function createCategoryButtons(categories, onClick) {
-      const container = document.getElementById('categoryList');
-      container.innerHTML = '';
-      Object.keys(categories).forEach(cat => {
-        const btn = document.createElement('button');
+    function renderCategories(items) {
+      const categories = [...new Set(items.map(item => item["カテゴリ"]))];
+      const btnContainer = document.getElementById("categoryButtons");
+      btnContainer.innerHTML = "";
+      categories.forEach(cat => {
+        const btn = document.createElement("button");
         btn.textContent = cat;
-        btn.onclick = () => onClick(cat);
-        container.appendChild(btn);
+        btn.onclick = () => {
+          selectedCategory = cat;
+          renderMenuItems();
+        };
+        btnContainer.appendChild(btn);
       });
     }
 
-    function showItems(items) {
-      const menu = document.getElementById('menuList');
-      menu.innerHTML = '';
+    function renderMenuItems() {
+      const container = document.getElementById("menuContainer");
+      container.innerHTML = "";
+
+      const items = selectedCategory
+        ? allMenuItems.filter(item => item["カテゴリ"] === selectedCategory)
+        : allMenuItems;
+
       items.forEach(item => {
-        const div = document.createElement('div');
-        div.className = 'item';
+        const div = document.createElement("div");
+        div.className = "menuItem";
         div.innerHTML = `
-          <img src="${item['画像URL']}" alt="${item['商品名']}">
-          <h4>${item['商品名']}</h4>
-          <p>￥${item['金額']}</p>
+          <img src="${item["画像URL"]}" alt="${item["商品名"]}" />
+          <h4>${item["商品名"]}</h4>
+          <p>${item["金額"]} 円</p>
         `;
-        menu.appendChild(div);
+        div.onclick = () => addToOrder(item);
+        container.appendChild(div);
       });
     }
 
-    (async () => {
-      const data = await loadCSV();
-      const grouped = groupByCategory(data);
-      createCategoryButtons(grouped, cat => showItems(grouped[cat]));
-      const first = Object.keys(grouped)[0];
-      if (first) showItems(grouped[first]);
-    })();
+    function addToOrder(item) {
+      const name = item["商品名"];
+      const price = parseInt(item["金額"]);
+      if (!orders[name]) {
+        orders[name] = { count: 1, price };
+      } else {
+        orders[name].count++;
+      }
+      renderOrder();
+    }
+
+    function renderOrder() {
+      const list = document.getElementById("orderItems");
+      list.innerHTML = "";
+      let total = 0;
+      Object.entries(orders).forEach(([name, { count, price }]) => {
+        const li = document.createElement("li");
+        li.textContent = `${name} x ${count} = ${price * count} 円`;
+        total += price * count;
+        list.appendChild(li);
+      });
+      document.getElementById("totalPrice").textContent = total;
+    }
+
+    function submitOrder() {
+      const tableNumber = document.getElementById("tableNumber").value;
+      if (!tableNumber) {
+        alert("テーブル番号を入力してください");
+        return;
+      }
+      const items = Object.entries(orders)
+        .map(([name, { count }]) => `${name} x ${count}`)
+        .join(", ");
+      const total = document.getElementById("totalPrice").textContent;
+
+      const formUrl = "https://docs.google.com/forms/d/e/1FAIpQLScbYOi6dsyUuIXclTKtrr6DeeZMg_WYXzNCFELm5hay0hrx4g/formResponse";
+      const data = new FormData();
+      data.append("entry.408172505", tableNumber);
+      data.append("entry.1132597987", items);
+      data.append("entry.418961724", total);
+
+      fetch(formUrl, {
+        method: "POST",
+        mode: "no-cors",
+        body: data,
+      });
+
+      alert("注文を送信しました！");
+    }
+
+    window.onload = async () => {
+      allMenuItems = await loadCSV();
+      renderCategories(allMenuItems);
+      renderMenuItems();
+    };
   </script>
 </body>
 </html>
