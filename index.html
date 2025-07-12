@@ -5,171 +5,122 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>注文ページ</title>
   <style>
-    body {
-      font-family: sans-serif;
-      margin: 0;
-      padding: 0;
-      display: flex;
-      flex-direction: column;
-    }
-    header {
-      padding: 1em;
-      background: #333;
-      color: white;
-      text-align: center;
-    }
-    .container {
-      display: flex;
-      flex: 1;
-    }
-    .menu-categories {
-      width: 30%;
-      background: #f8f8f8;
-      padding: 1em;
+    body { font-family: sans-serif; margin: 0; display: flex; flex-direction: row; height: 100vh; }
+    #categoryList {
+      width: 150px;
+      background: #f4f4f4;
+      padding: 10px;
       box-sizing: border-box;
+      overflow-y: auto;
     }
-    .menu-categories button {
+    #categoryList button {
       display: block;
       width: 100%;
-      margin-bottom: 0.5em;
-      padding: 1em;
-      font-size: 1em;
+      margin-bottom: 5px;
+      padding: 8px;
+      background: #fff;
+      border: 1px solid #ccc;
+      cursor: pointer;
     }
-    .menu-items {
-      width: 70%;
-      padding: 1em;
-      box-sizing: border-box;
+    #menuList {
+      flex: 1;
+      padding: 10px;
       display: flex;
       flex-wrap: wrap;
-      gap: 1em;
+      justify-content: flex-start;
+      align-content: flex-start;
+      overflow-y: auto;
+      box-sizing: border-box;
     }
-    .menu-item {
-      width: calc(50% - 1em);
-      border: 1px solid #ccc;
-      border-radius: 8px;
-      padding: 0.5em;
+    .item {
+      width: 160px;
+      margin: 5px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      overflow: hidden;
+      background: #fff;
       text-align: center;
     }
-    .menu-item img {
-      max-width: 100%;
-      height: auto;
-      border-radius: 8px;
+    .item img {
+      width: 100%;
+      height: 100px;
+      object-fit: cover;
     }
-    #order-summary, #total, #confirmation {
-      padding: 1em;
-      text-align: center;
+    .item h4 {
+      margin: 5px 0 0;
+      font-size: 16px;
     }
-    button {
-      font-size: 1.2em;
+    .item p {
+      margin: 5px 0;
+      font-size: 14px;
+    }
+    @media (max-width: 768px) {
+      body { flex-direction: column; }
+      #categoryList { width: 100%; display: flex; overflow-x: auto; }
+      #categoryList button { flex: 1; white-space: nowrap; }
+      #menuList { height: auto; }
     }
   </style>
 </head>
 <body>
-  <header>
-    <h1>注文ページ</h1>
-    <label>テーブル番号: <input type="text" id="table-number" placeholder="例: 5"></label>
-  </header>
-  <div class="container">
-    <div class="menu-categories">
-      <button onclick="showCategory('main')">メイン</button>
-      <button onclick="showCategory('side')">サイド</button>
-      <button onclick="showCategory('drink')">ドリンク</button>
-    </div>
-    <div class="menu-items" id="menu-items"></div>
-  </div>
-  <div id="order-summary"></div>
-  <div id="total"></div>
-  <div style="text-align:center">
-    <button id="submit-button" onclick="submitOrder()">注文を確定する</button>
-  </div>
-  <div id="confirmation">ご注文ありがとうございました！</div>
+  <div id="categoryList">読み込み中...</div>
+  <div id="menuList"></div>
 
   <script>
-    const menuData = {
-      main: [
-        { name: "ラーメン", price: 800, image: "picture/ramen.webp" },
-        { name: "チャーハン", price: 600, image: "https://via.placeholder.com/200?text=チャーハン" }
-      ],
-      side: [
-        { name: "唐揚げ", price: 500, image: "https://via.placeholder.com/200?text=唐揚げ" },
-        { name: "餃子", price: 400, image: "https://via.placeholder.com/200?text=餃子" }
-      ],
-      drink: [
-        { name: "ウーロン茶", price: 300, image: "https://via.placeholder.com/200?text=ウーロン茶" },
-        { name: "ビール", price: 550, image: "https://via.placeholder.com/200?text=ビール" }
-      ]
-    };
+    const csvUrl = "https://docs.google.com/spreadsheets/d/1dNk8uLhzl06UJeIsMRYoyLd_MAoHuIpV-qqYIyf8ZS8/export?format=csv&gid=100058082";
 
-    const order = JSON.parse(localStorage.getItem('order') || '{}');
-    showCategory('main');
-    updateOrderDisplay();
+    async function loadCSV() {
+      const res = await fetch(csvUrl);
+      const text = await res.text();
+      const rows = text.trim().split('\n').map(r => r.split(','));
+      const headers = rows[0];
+      const data = rows.slice(1).map(r => Object.fromEntries(headers.map((h, i) => [h.trim(), r[i]?.trim()])));
+      return data;
+    }
 
-    function showCategory(category) {
-      const menuContainer = document.getElementById('menu-items');
-      menuContainer.innerHTML = '';
-      menuData[category].forEach(item => {
+    function groupByCategory(data) {
+      const result = {};
+      data.forEach(item => {
+        const cat = item["カテゴリ"];
+        if (!result[cat]) result[cat] = [];
+        result[cat].push(item);
+      });
+      return result;
+    }
+
+    function createCategoryButtons(categories, onClick) {
+      const container = document.getElementById('categoryList');
+      container.innerHTML = '';
+      Object.keys(categories).forEach(cat => {
+        const btn = document.createElement('button');
+        btn.textContent = cat;
+        btn.onclick = () => onClick(cat);
+        container.appendChild(btn);
+      });
+    }
+
+    function showItems(items) {
+      const menu = document.getElementById('menuList');
+      menu.innerHTML = '';
+      items.forEach(item => {
         const div = document.createElement('div');
-        div.className = 'menu-item';
+        div.className = 'item';
         div.innerHTML = `
-          <img src="${item.image}" alt="${item.name}">
-          <h3>${item.name}</h3>
-          <p>${item.price}円</p>
-          <button onclick="addItem('${item.name}', ${item.price})">追加</button>
+          <img src="${item['画像URL']}" alt="${item['商品名']}">
+          <h4>${item['商品名']}</h4>
+          <p>￥${item['金額']}</p>
         `;
-        menuContainer.appendChild(div);
+        menu.appendChild(div);
       });
     }
 
-    function addItem(item, price) {
-      if (!order[item]) order[item] = { count: 0, price: price };
-      order[item].count++;
-      localStorage.setItem('order', JSON.stringify(order));
-      updateOrderDisplay();
-    }
-
-    function updateOrderDisplay() {
-      const summary = document.getElementById('order-summary');
-      const totalDiv = document.getElementById('total');
-      let html = '<strong>注文内容:</strong><ul>';
-      let total = 0;
-      for (const item in order) {
-        const entry = order[item];
-        html += `<li>${item} x${entry.count}（${entry.price * entry.count}円）</li>`;
-        total += entry.price * entry.count;
-      }
-      html += '</ul>';
-      summary.innerHTML = html;
-      totalDiv.innerHTML = `<strong>合計金額: ${total}円</strong>`;
-    }
-
-    function submitOrder() {
-      const tableNumber = document.getElementById('table-number').value;
-      if (!tableNumber) return alert("テーブル番号を入力してください。");
-      let orderContent = '';
-      let totalAmount = 0;
-      for (const item in order) {
-        orderContent += `${item} x${order[item].count}\n`;
-        totalAmount += order[item].count * order[item].price;
-      }
-
-      const formData = new FormData();
-      formData.append("entry.408172505", tableNumber);
-      formData.append("entry.1132597987", orderContent);
-      formData.append("entry.418961724", totalAmount);
-
-      const submitButton = document.getElementById('submit-button');
-      submitButton.disabled = true;
-
-      fetch("https://docs.google.com/forms/d/e/1FAIpQLScbYOi6dsyUuIXclTKtrr6DeeZMg_WYXzNCFELm5hay0hrx4g/formResponse", {
-        method: "POST",
-        mode: "no-cors",
-        body: formData
-      }).then(() => {
-        document.getElementById('confirmation').style.display = 'block';
-        localStorage.removeItem('order');
-        setTimeout(() => location.reload(), 3000);
-      });
-    }
+    (async () => {
+      const data = await loadCSV();
+      const grouped = groupByCategory(data);
+      createCategoryButtons(grouped, cat => showItems(grouped[cat]));
+      const first = Object.keys(grouped)[0];
+      if (first) showItems(grouped[first]);
+    })();
   </script>
 </body>
 </html>
