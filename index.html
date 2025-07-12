@@ -13,54 +13,73 @@
       flex-direction: column;
       align-items: center;
     }
+    .wrapper {
+      display: flex;
+      width: 100%;
+    }
+    #leftMenu {
+      width: 180px;
+      margin-right: 20px;
+    }
+    .category-buttons {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .category-buttons button {
+      padding: 10px;
+      font-size: 1em;
+      cursor: pointer;
+    }
     #menuContainer {
       display: flex;
       flex-wrap: wrap;
-      justify-content: center;
+      gap: 15px;
     }
     .menuItem {
       border: 1px solid #ccc;
       border-radius: 8px;
       padding: 10px;
-      margin: 10px;
       width: 150px;
       text-align: center;
       cursor: pointer;
+      background: #fff;
     }
     .menuItem img {
       width: 100%;
       height: auto;
       border-radius: 4px;
     }
-    .category-buttons {
-      margin-bottom: 10px;
-    }
-    .category-buttons button {
-      margin: 0 5px;
-      padding: 5px 10px;
-    }
   </style>
 </head>
 <body>
-  <h1>メニューから注文</h1>
+  <h1>注文ページ</h1>
+  <div class="wrapper">
+    <!-- 左メニュー -->
+    <div id="leftMenu">
+      <div class="category-buttons" id="categoryButtons"></div>
+    </div>
 
-  <div class="category-buttons" id="categoryButtons"></div>
+    <!-- 右側：メニューと注文 -->
+    <div style="flex-grow: 1;">
+      <div id="menuContainer"></div>
 
-  <div id="menuContainer"></div>
+      <div style="margin: 10px 0;">
+        テーブル番号: <input type="text" id="tableNumber" placeholder="例: A1" />
+      </div>
 
-  <div style="margin: 10px 0;">
-    テーブル番号: <input type="text" id="tableNumber" placeholder="例: A1" />
+      <div id="orderList" style="margin-top: 20px;">
+        <h3>注文リスト</h3>
+        <ul id="orderItems"></ul>
+        <p>合計金額: <span id="totalPrice">0</span> 円</p>
+      </div>
+
+      <button onclick="submitOrder()" style="padding: 10px 20px; margin-top: 10px;">
+        注文を確定する
+      </button>
+    </div>
   </div>
 
-  <div id="orderList" style="margin-top: 20px;">
-    <h3>注文リスト</h3>
-    <ul id="orderItems"></ul>
-    <p>合計金額: <span id="totalPrice">0</span> 円</p>
-  </div>
-
-  <button onclick="submitOrder()" style="padding: 10px 20px; margin-top: 10px;">
-    注文を確定する
-  </button>
 
   <script>
     const csvUrl = "https://docs.google.com/spreadsheets/d/1dNk8uLhzl06UJeIsMRYoyLd_MAoHuIpV-qqYIyf8ZS8/export?format=csv&gid=100058082";
