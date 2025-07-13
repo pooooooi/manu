@@ -1,0 +1,128 @@
+header {
+    background-color: #222;
+    /* 薄めの黒 */
+    color: white;
+    padding: 1em;
+    text-align: center;
+    font-size: 1.8em;
+    width: 100%;
+    /* すべての外側余白を一旦ゼロに */
+    margin-bottom: 1em;
+    /* 下だけ余白を加える */
+    box-sizing: border-box;
+    margin-top: 0 !important;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.wrapper {
+    display: flex;
+    width: 100%;
+}
+
+#leftMenu {
+    width: 180px;
+    margin-right: 20px;
+    padding-left: 5px;
+    /* ← これが左の余白 */
+}
+
+.category-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.category-buttons button {
+    width: 80px;
+    min-height: 40px;
+    padding: 10px;
+    font-size: 1em;
+    border: 1px solid #ccc;
+    font-weight: normal;
+    color: #333;
+    background-color: #f0f0f0;
+    box-sizing: border-box;
+    transition: background-color 0.2s, color 0.2s;
+    text-align: center;
+}
+
+.category-buttons button:focus {
+    outline: none;
+    /* フォーカス時の青い枠を消す */
+    box-shadow: none;
+    /* ブラウザ独自の影も消す */
+}
+
+.category-buttons button.selected {
+    background-color: #4CAF50;
+    color: white;
+    font-weight: normal;
+    /* 選択時も太字にしない */
+}
+
+#menuContainer {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    /* 両端に寄せる */
+}
+
+.menuItem {
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    padding: 10px;
+    width: 48%;
+    text-align: center;
+    cursor: pointer;
+    background: #fff;
+    box-sizing: border-box;
+    margin-bottom: 10px;
+}
+
+.menuItem img {
+    width: 100%;
+    height: auto;
+    border-radius: 4px;
+}
+
+#showOrderBtn {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    padding: 14px 24px;
+    font-size: 1.2em;
+    background: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    z-index: 1000;
+}
+
+#orderBadge {
+    background: red;
+    color: white;
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-size: 0.8em;
+}
+
+#orderModal {
+    display: none;
+    position: fixed;
+    bottom: 80px;
+    right: 20px;
+    width: 300px;
+    background: white;
+    border: 1px solid #ccc;
+    padding: 15px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    z-index: 999;
+}

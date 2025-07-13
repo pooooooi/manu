@@ -1,89 +1,13 @@
-
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>注文ページ</title>
-  <style>
-    header {
-      background-color: #222;     /* 薄めの黒 */
-      color: white;
-      padding: 1em;
-      text-align: center;
-      font-size: 1.8em;
-      width: 100%;                 /* すべての外側余白を一旦ゼロに */
-      margin-bottom: 1em;         /* 下だけ余白を加える */
-      box-sizing: border-box;
-      margin-top: 0 !important;
-    }
-    body {
-      margin: 0;
-      padding: 0;
-      font-family: sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-    .wrapper {
-      display: flex;
-      width: 100%;
-    }
-    #leftMenu {
-      width: 180px;
-      margin-right: 20px;
-      padding-left: 5px; /* ← これが左の余白 */
-    }
-    .category-buttons {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .category-buttons button {
-      width: 80px;
-      min-height: 40px;
-      padding: 10px;
-      font-size: 1em;
-      border: 1px solid #ccc;
-      font-weight: normal;
-      color: #333;
-      background-color: #f0f0f0;
-      box-sizing: border-box;
-      transition: background-color 0.2s, color 0.2s;
-      text-align: center;
-    }
-    .category-buttons button:focus {
-      outline: none;        /* フォーカス時の青い枠を消す */
-      box-shadow: none;     /* ブラウザ独自の影も消す */
-    }
-    .category-buttons button.selected {
-      background-color: #4CAF50;
-      color: white;
-      font-weight: normal;         /* 選択時も太字にしない */
-    }
-    #menuContainer {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between; /* 両端に寄せる */
-    }
-    .menuItem {
-      border: 1px solid #ccc;
-      border-radius: 8px;
-      padding: 10px;
-      width: 48%;
-      text-align: center;
-      cursor: pointer;
-      background: #fff;
-      box-sizing: border-box;
-      margin-bottom: 10px;
-    }
-    .menuItem img {
-      width: 100%;
-      height: auto;
-      border-radius: 4px;
-    }
-  </style>
+  <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
   <header>注文ページ</header>
   <div class="wrapper">
@@ -99,190 +23,17 @@
       <div style="margin: 10px 0;">
         テーブル番号: <input type="text" id="tableNumber" placeholder="例: A1" />
       </div>
-
-      <!--<div id="orderList" style="margin-top: 20px;">
+      <button id="showOrderBtn" onclick="toggleOrderModal()">
+        🛒 注文リスト <span id="orderBadge">0</span>
+      </button>
+      <div id="orderModal">
         <h3>注文リスト</h3>
         <ul id="orderItems"></ul>
         <p>合計金額: <span id="totalPrice">0</span> 円</p>
+        <button onclick="submitOrder()">注文を確定する</button>
       </div>
-
-      <button onclick="submitOrder()" style="padding: 10px 20px; margin-top: 10px;">
-        注文を確定する
-      </button>
     </div>
-      -->
-    <button id="showOrderBtn" onclick="toggleOrderModal()" style="
-      position: fixed;        /* 固定位置にする */
-      bottom: 20px;           /* 下から20pxの位置 */
-      right: 20px;            /* 右から20pxの位置 */
-      padding: 10px 15px;
-      background: #4CAF50;
-      color: white;
-      border: none;
-      border-radius: 5px;
-      z-index: 1000;          /* 他要素より前面に出す */
-    ">
-      注文リストを見る
-    </button>
-    <div id="orderModal" style="
-      display: none;
-      position: fixed;
-      bottom: 80px;
-      right: 20px;
-      width: 300px;
-      background: white;
-      border: 1px solid #ccc;
-      padding: 15px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-      z-index: 999;
-    ">
-      <h3>注文リスト</h3>
-      <ul id="orderItems"></ul>
-      <p>合計金額: <span id="totalPrice">0</span> 円</p>
-      <button onclick="submitOrder()">注文を確定する</button>
-    </div>
-  </div>
-
-
-  <script>
-    const csvUrl = "https://docs.google.com/spreadsheets/d/1dNk8uLhzl06UJeIsMRYoyLd_MAoHuIpV-qqYIyf8ZS8/export?format=csv&gid=100058082";
-
-    let allMenuItems = [];
-    let selectedCategory = "";
-    const orders = {};
-
-    async function loadCSV() {
-      const res = await fetch(csvUrl);
-      const text = await res.text();
-
-      const rows = text.trim().split(/\r?\n/).map(r => r.split(','));
-      const headers = rows[0].map(h => h.trim().replace(/^"|"$/g, ''));
-      return rows.slice(1).map(r => {
-        const obj = {};
-        headers.forEach((h, i) => {
-          obj[h] = r[i]?.trim().replace(/^"|"$/g, '');
-        });
-        return obj;
-      });
-    }
-
-    function renderCategories(items) {
-      const categories = [...new Set(items.map(item => item["カテゴリ"]))];
-      const btnContainer = document.getElementById("categoryButtons");
-      btnContainer.innerHTML = "";
-      categories.forEach(cat => {
-        const btn = document.createElement("button");
-        btn.textContent = cat;
-        btn.classList.add("category-btn");
-        btn.onclick = () => {
-          selectedCategory = cat;
-          renderMenuItems();
-          document.querySelectorAll('.category-buttons button').forEach(b => b.classList.remove('selected'));
-          btn.classList.add('selected');
-        };
-        btnContainer.appendChild(btn);
-      });
-    }
-
-    function renderMenuItems() {
-      const container = document.getElementById("menuContainer");
-      container.innerHTML = "";
-
-      const items = selectedCategory
-        ? allMenuItems.filter(item => item["カテゴリ"] === selectedCategory)
-        : allMenuItems;
-
-      items.forEach(item => {
-        const div = document.createElement("div");
-        div.className = "menuItem";
-        div.innerHTML = `
-          <img src="${item["画像URL"]}" alt="${item["商品名"]}" />
-          <h4>${item["商品名"]}</h4>
-          <p>${item["金額"]} 円</p>
-        `;
-        div.onclick = () => addToOrder(item);
-        container.appendChild(div);
-      });
-    }
-
-    function addToOrder(item) {
-      const name = item["商品名"];
-      const price = parseInt(item["金額"]);
-      if (!orders[name]) {
-        orders[name] = { count: 1, price };
-      } else {
-        orders[name].count++;
-      }
-      renderOrder();
-    }
-
-    function renderOrder() {
-      const list = document.getElementById("orderItems");
-      list.innerHTML = "";
-      let total = 0;
-      Object.entries(orders).forEach(([name, { count, price }]) => {
-        const li = document.createElement("li");
-        li.innerHTML = `
-          ${name} x ${count} = ${price * count} 円
-          <button onclick="decreaseItem('${name}')">−</button>
-          <button onclick="removeItem('${name}')">削除</button>
-        `;
-        total += price * count;
-        list.appendChild(li);
-      });
-      document.getElementById("totalPrice").textContent = total;
-    }
-    function decreaseItem(name) {
-      if (orders[name]) {
-        orders[name].count--;
-        if (orders[name].count <= 0) {
-        delete orders[name];
-        }
-      renderOrder();
-      }
-    }
-    function removeItem(name) {
-      delete orders[name];
-      renderOrder();
-    }
-    function toggleOrderModal() {
-      const modal = document.getElementById("orderModal");
-      modal.style.display = modal.style.display === "none" ? "block" : "none";
-    }
-
-    function submitOrder() {
-      const tableNumber = document.getElementById("tableNumber").value;
-      if (!tableNumber) {
-        alert("テーブル番号を入力してください");
-        return;
-      }
-      const items = Object.entries(orders)
-        .map(([name, { count }]) => `${name} x ${count}`)
-        .join(", ");
-      const total = document.getElementById("totalPrice").textContent;
-
-      const formUrl = "https://docs.google.com/forms/d/e/1FAIpQLScbYOi6dsyUuIXclTKtrr6DeeZMg_WYXzNCFELm5hay0hrx4g/formResponse";
-      const data = new FormData();
-      data.append("entry.408172505", tableNumber);
-      data.append("entry.1132597987", items);
-      data.append("entry.418961724", total);
-
-      fetch(formUrl, {
-        method: "POST",
-        mode: "no-cors",
-        body: data,
-      });
-
-      alert("注文を送信しました！");
-      Object.keys(orders).forEach(key => delete orders[key]); // 注文データをクリア
-      renderOrder(); // 表示を更新
-    }
-
-    window.onload = async () => {
-      allMenuItems = await loadCSV();
-      renderCategories(allMenuItems);
-      renderMenuItems();
-    };
-  </script>
+    <script src="menu.js"></script>
 </body>
+
 </html>
