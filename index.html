@@ -26,11 +26,30 @@
       <button id="showOrderBtn" onclick="toggleOrderModal()">
         🛒 注文リスト <span id="orderBadge">0</span>
       </button>
+      <button id="showHistoryBtn" onclick="toggleHistoryModal()">
+        📄 注文履歴・清算
+      </button>
       <div id="orderModal">
         <h3>注文リスト</h3>
         <ul id="orderItems"></ul>
         <p>合計金額: <span id="totalPrice">0</span> 円</p>
         <button onclick="submitOrder()">注文を確定する</button>
+        <button onclick="closeOrderModal()">閉じる</button>
+      </div>
+      <div id="historyModal">
+        <h3>注文履歴</h3>
+        <ul id="historyItems"></ul>
+        <p>合計金額: <span id="historyTotal">0</span> 円</p>
+        <button onclick="clearHistory()">清算する</button>
+      </div>
+    </div>
+    <!-- オプション選択用モーダル（最初は非表示） -->
+    <div id="optionModal" class="modal">
+      <div class="modal-content">
+        <h3 id="optionTitle"></h3>
+        <div id="optionList"></div>
+        <button onclick="addOptionsToOrder()">オプションを追加</button>
+        <button onclick="closeModal()">閉じる</button>
       </div>
     </div>
     <script src="menu.js"></script>

@@ -3,6 +3,7 @@ const csvUrl = "https://docs.google.com/spreadsheets/d/1dNk8uLhzl06UJeIsMRYoyLd_
 let allMenuItems = [];
 let selectedCategory = "";
 const orders = {};
+const orderHistory = [];
 
 async function loadCSV() {
     const res = await fetch(csvUrl);
@@ -109,6 +110,20 @@ function renderOrder() {
         badge.style.display = "inline-block";
     }
 }
+function renderHistory() {
+    const historyList = document.getElementById("historyItems");
+    historyList.innerHTML = "";
+    let total = 0;
+
+    orderHistory.forEach(h => {
+        const li = document.createElement("li");
+        li.textContent = `テーブル${h.table}：${h.items} 合計${h.total}円`;
+        historyList.appendChild(li);
+        total += parseInt(h.total);
+    });
+
+    document.getElementById("historyTotal").textContent = total;
+}
 function decreaseItem(name) {
     if (orders[name]) {
         orders[name].count--;
@@ -128,9 +143,69 @@ function toggleOrderModal() {
     const modal = document.getElementById("orderModal");
     modal.style.display = modal.style.display === "none" ? "block" : "none";
 }
+function toggleHistoryModal() {
+    const modal = document.getElementById("historyModal");
+    modal.style.display = modal.style.display === "none" ? "block" : "none";
+}
+let selectedItem = null;
+
 function showOptions(item) {
-    sessionStorage.setItem('selectedItem', JSON.stringify(item));
-    window.location.href = "option.html";  // オプション用ページへ遷移
+    selectedItem = item;
+    document.getElementById("optionTitle").textContent = item["商品名"];
+    const optionList = document.getElementById("optionList");
+    optionList.innerHTML = "";
+
+    let i = 1;
+    while (item[`オプション${i}`]) {
+        const name = item[`オプション${i}`];
+        const price = item[`オプション${i}金額`] || 0;
+        const label = document.createElement("label");
+        label.innerHTML = `<input type="checkbox" value="${name}:${price}"> ${name}（+${price}円）`;
+        optionList.appendChild(label);
+        optionList.appendChild(document.createElement("br"));
+        i++;
+    }
+
+    document.getElementById("optionModal").style.display = "flex";
+}
+function closeOrderModal() {
+    document.getElementById("orderModal").style.display = "none";
+}
+
+function closeModal() {
+    document.getElementById("optionModal").style.display = "none";
+}
+
+function addOptionsToOrder() {
+    const baseName = selectedItem["商品名"];
+    const basePrice = parseInt(selectedItem["金額"]);
+
+    const checkboxes = document.querySelectorAll('#optionList input[type="checkbox"]');
+    let selectedNames = [];
+    let extraPrice = 0;
+
+    checkboxes.forEach(cb => {
+        if (cb.checked) {
+            const [name, price] = cb.value.split(':');
+            selectedNames.push(name);
+            extraPrice += parseInt(price);
+        }
+    });
+
+    const fullName = selectedNames.length > 0
+        ? `${baseName}（${selectedNames.join(", ")}）`
+        : baseName;
+
+    if (!orders[fullName]) {
+        orders[fullName] = { count: 1, price: basePrice + extraPrice };
+    } else {
+        orders[fullName].count++;
+    }
+
+    sessionStorage.setItem('orders', JSON.stringify(orders));
+    renderOrder();
+    closeModal();
+    alert("注文リストに追加されました。");
 }
 
 
@@ -147,6 +222,10 @@ function submitOrder() {
         .map(([name, { count }]) => `${name} x ${count}`)
         .join(", ");
     const total = document.getElementById("totalPrice").textContent;
+
+        // 注文履歴に追加
+    orderHistory.push({ table: tableNumber, items, total });
+    renderHistory();
 
     const formUrl = "https://docs.google.com/forms/d/e/1FAIpQLScbYOi6dsyUuIXclTKtrr6DeeZMg_WYXzNCFELm5hay0hrx4g/formResponse";
     const data = new FormData();
