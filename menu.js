@@ -124,6 +124,12 @@ function renderHistory() {
 
     document.getElementById("historyTotal").textContent = total;
 }
+function clearHistory() {
+    if (!confirm("本当に清算して、注文履歴を削除しますか？")) return;
+    orderHistory.length = 0;
+    renderHistory();
+    alert("注文履歴をクリアしました。");
+}
 function decreaseItem(name) {
     if (orders[name]) {
         orders[name].count--;

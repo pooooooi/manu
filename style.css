@@ -149,7 +149,7 @@ body {
     background: white;
     border: 1px solid #ccc;
     padding: 15px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     z-index: 999;
 }
 
@@ -170,4 +170,67 @@ body {
     background: white;
     padding: 20px;
     border-radius: 8px;
+}
+
+/* ===== スマホ用（768px以下） ===== */
+@media screen and (max-width: 768px) {
+    .wrapper {
+        flex-direction: column;
+        align-items: center;
+    }
+
+    #leftMenu {
+        width: 100%;
+        margin-right: 0;
+        padding: 0;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 10px;
+        margin-bottom: 10px;
+    }
+
+    .category-buttons {
+        flex-direction: row;
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    .category-buttons button {
+        width: auto;
+        padding: 10px 16px;
+        min-width: 80px;
+    }
+
+    #menuContainer {
+        width: 95%;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+    }
+
+    .menuItem {
+        width: 48%;
+        margin-bottom: 10px;
+    }
+
+    #showOrderBtn,
+    #showHistoryBtn {
+        width: 90%;
+        bottom: auto;
+        position: relative;
+        margin: 10px 0;
+    }
+
+    #orderModal,
+    #historyModal {
+        position: fixed;
+        width: 90%;
+        bottom: 10%;
+        left: 5%;
+    }
+
+    .modal-content {
+        width: 90%;
+    }
 }
