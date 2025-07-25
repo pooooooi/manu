@@ -276,7 +276,7 @@ function submitOrder() {
     // });
 
     // ✅ GAS APIに送信
-    const endpoint = "https://script.google.com/macros/s/AKfycbyHnXGvyB0xaWYqfaf2W-9tS9_Pi_P0VT4W_GMWzZbUhENKln4QkZUwFNraKGVoYoCkbw/exec";  // ←ここを自分のに変更！
+    const endpoint = "https://script.google.com/macros/s/AKfycbw8ED-mVd7I8Vhw8l7oWh_beRFtRxk3-i0AHBR0K1EmkH8BWDFlTP3V58kF7h3KE7-5/exec";  // ←ここを自分のに変更！
     fetch(endpoint, {
         method: "POST",
         body: JSON.stringify({ table: tableNumber, items, total }),
