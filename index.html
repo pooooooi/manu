@@ -9,7 +9,13 @@
 </head>
 
 <body>
-  <header>注文ページ</header>
+  <header>
+     <span>注文ページ</span>
+    <div class="table-number">
+        <span>テーブル番号：</span>
+        <input id="tableNumber" type="text" readonly />
+    </div>
+  </header>
   <div class="wrapper">
     <!-- 左メニュー -->
     <div id="leftMenu">
@@ -19,10 +25,6 @@
     <!-- 右側：メニューと注文 -->
     <div style="flex-grow: 1;">
       <div id="menuContainer"></div>
-
-      <div style="margin: 10px 0;">
-        テーブル番号: <input type="text" id="tableNumber" placeholder="例: A1" />
-      </div>
       <button id="showOrderBtn" onclick="toggleOrderModal()">
         🛒 注文リスト <span id="orderBadge">0</span>
       </button>
@@ -30,13 +32,19 @@
         📄 注文履歴・清算
       </button>
       <div id="orderModal">
+        <div class="modal-header">
+          <button class="close-btn" onclick="toggleOrderModal()">✕</button>
+        </div>
         <h3>注文リスト</h3>
         <ul id="orderItems"></ul>
         <p>合計金額: <span id="totalPrice">0</span> 円</p>
-        <button onclick="submitOrder()">注文を確定する</button>
-        <button onclick="closeOrderModal()">閉じる</button>
+        <button id="confirmOrderBtn" onclick="submitOrder()">注文を確定する</button>
+        <!-- <button onclick="closeOrderModal()">閉じる</button> -->
       </div>
       <div id="historyModal">
+        <div class="modal-header">
+          <button class="close-btn" onclick="toggleHistoryModal()">✕</button>
+        </div>
         <h3>注文履歴</h3>
         <ul id="historyItems"></ul>
         <p>合計金額: <span id="historyTotal">0</span> 円</p>

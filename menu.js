@@ -4,6 +4,8 @@ let allMenuItems = [];
 let selectedCategory = "";
 const orders = {};
 const orderHistory = [];
+const urlParams = new URLSearchParams(window.location.search);
+const tableNumberFromUrl = urlParams.get('table');
 
 async function loadCSV() {
     const res = await fetch(csvUrl);
@@ -24,39 +26,51 @@ function renderCategories(items) {
     const categories = [...new Set(items.map(item => item["カテゴリ"]))];
     const btnContainer = document.getElementById("categoryButtons");
     btnContainer.innerHTML = "";
+
     categories.forEach(cat => {
         const btn = document.createElement("button");
         btn.textContent = cat;
         btn.classList.add("category-btn");
+
+        // 選択されたカテゴリをクリックしたら色変更
         btn.onclick = () => {
             selectedCategory = cat;
             renderMenuItems();
             document.querySelectorAll('.category-buttons button').forEach(b => b.classList.remove('selected'));
             btn.classList.add('selected');
         };
+
         btnContainer.appendChild(btn);
+
+        // 最初のカテゴリボタンを選択状態にしておく
+        if (cat === selectedCategory) {
+            btn.classList.add('selected');
+        }
     });
 }
 
+
 function renderMenuItems() {
-  const container = document.getElementById("menuContainer");
-  container.innerHTML = "";
+    const container = document.getElementById("menuContainer");
+    container.innerHTML = "";
 
-  const items = selectedCategory
-    ? allMenuItems.filter(item => item["カテゴリ"] === selectedCategory)
-    : allMenuItems;
+    const items = selectedCategory
+        ? allMenuItems.filter(item => item["カテゴリ"] === selectedCategory)
+        : allMenuItems;
 
-  items.forEach(item => {
-    const div = document.createElement("div");
-    div.className = "menuItem";
-    div.innerHTML = `
+    items.forEach(item => {
+        const div = document.createElement("div");
+        div.className = "menuItem";
+        div.innerHTML = `
       <img src="${item["画像URL"]}" alt="${item["商品名"]}" />
+      <div class="menu-text">
       <h4>${item["商品名"]}</h4>
       <p>${item["金額"]} 円</p>
+      </div>
     `;
-    div.onclick = () => showOptions(item);
-    container.appendChild(div);
-  });
+        div.onclick = () => showOptions(item);
+        container.appendChild(div);
+    });
 }
 
 // function renderMenuItems() {
@@ -82,7 +96,8 @@ function addToOrder(item) {
 }
 
 function renderOrder() {
-    const storedOrders = JSON.parse(sessionStorage.getItem('orders')) || {};
+    const storageKey = `orders-${tableNumberFromUrl || 'default'}`;
+    const storedOrders = JSON.parse(sessionStorage.getItem(storageKey)) || {};
     Object.assign(orders, storedOrders);
     const list = document.getElementById("orderItems");
     list.innerHTML = "";
@@ -126,8 +141,13 @@ function renderHistory() {
 }
 function clearHistory() {
     if (!confirm("本当に清算して、注文履歴を削除しますか？")) return;
-    orderHistory.length = 0;
+
+    const historyKey = `order-history-${tableNumberFromUrl || 'default'}`;
+    sessionStorage.removeItem(historyKey);  // ← テーブルごとの履歴だけ削除
+
+    orderHistory.length = 0;  // メモリ上の履歴も消す
     renderHistory();
+
     alert("注文履歴をクリアしました。");
 }
 function decreaseItem(name) {
@@ -208,7 +228,8 @@ function addOptionsToOrder() {
         orders[fullName].count++;
     }
 
-    sessionStorage.setItem('orders', JSON.stringify(orders));
+    const storageKey = `orders-${tableNumberFromUrl || 'default'}`;
+    sessionStorage.setItem(storageKey, JSON.stringify(orders));
     renderOrder();
     closeModal();
     alert("注文リストに追加されました。");
@@ -216,7 +237,16 @@ function addOptionsToOrder() {
 
 
 function submitOrder() {
+    const historyKey = `order-history-${tableNumberFromUrl || 'default'}`;
+    const storedHistory = JSON.parse(sessionStorage.getItem(historyKey)) || [];
     const tableNumber = document.getElementById("tableNumber").value;
+    const items = Object.entries(orders)
+        .map(([name, { count }]) => `${name} x ${count}`)
+        .join(", ");
+    const total = document.getElementById("totalPrice").textContent;
+    storedHistory.push({ table: tableNumber, items, total });
+    sessionStorage.setItem(historyKey, JSON.stringify(storedHistory));
+
     if (!tableNumber) {
         alert("テーブル番号を入力してください");
         return;
@@ -224,28 +254,49 @@ function submitOrder() {
     if (!confirm("注文を確定します。よろしいですか？")) {
         return; // 「いいえ」の場合は何もしない
     }
-    const items = Object.entries(orders)
-        .map(([name, { count }]) => `${name} x ${count}`)
-        .join(", ");
-    const total = document.getElementById("totalPrice").textContent;
 
-        // 注文履歴に追加
-    orderHistory.push({ table: tableNumber, items, total });
+
+    // ====== 注文履歴へ追加（テーブルごとに保存） ======
+    storedHistory.push({ table: tableNumber, items, total });
+    sessionStorage.setItem(historyKey, JSON.stringify(storedHistory));
+
+    orderHistory.length = 0;
+    orderHistory.push(...storedHistory);
     renderHistory();
+    // const formUrl = "https://docs.google.com/forms/d/e/1FAIpQLScbYOi6dsyUuIXclTKtrr6DeeZMg_WYXzNCFELm5hay0hrx4g/formResponse";
+    // const data = new FormData();
+    // data.append("entry.408172505", tableNumber);
+    // data.append("entry.1132597987", items);
+    // data.append("entry.418961724", total);
 
-    const formUrl = "https://docs.google.com/forms/d/e/1FAIpQLScbYOi6dsyUuIXclTKtrr6DeeZMg_WYXzNCFELm5hay0hrx4g/formResponse";
-    const data = new FormData();
-    data.append("entry.408172505", tableNumber);
-    data.append("entry.1132597987", items);
-    data.append("entry.418961724", total);
+    // fetch(formUrl, {
+    //     method: "POST",
+    //     mode: "no-cors",
+    //     body: data,
+    // });
 
-    fetch(formUrl, {
+    // ✅ GAS APIに送信
+    const endpoint = "https://script.google.com/macros/s/AKfycbyHnXGvyB0xaWYqfaf2W-9tS9_Pi_P0VT4W_GMWzZbUhENKln4QkZUwFNraKGVoYoCkbw/exec";  // ←ここを自分のに変更！
+    fetch(endpoint, {
         method: "POST",
-        mode: "no-cors",
-        body: data,
+        body: JSON.stringify({ table: tableNumber, items, total }),
+        headers: {
+            "Content-Type": "application/json",
+        },
+    }).then(() => {
+        alert("注文を送信しました！");
+        sessionStorage.removeItem(`orders-${tableNumberFromUrl || 'default'}`);
+        Object.keys(orders).forEach(key => delete orders[key]);
+        renderOrder();
+        toggleOrderModal();
+    }).catch(err => {
+        alert("送信に失敗しました");
+        console.error(err);
     });
 
-    sessionStorage.removeItem('orders'); // 確定後リセット
+    // ====== 注文リスト削除（テーブルごとに消すよう修正） ======
+    const storageKey = `orders-${tableNumberFromUrl || 'default'}`;
+    sessionStorage.removeItem(storageKey);
     alert("注文を送信しました！");
     toggleOrderModal();
     Object.keys(orders).forEach(key => delete orders[key]); // 注文データをクリア
@@ -254,6 +305,11 @@ function submitOrder() {
 
 window.onload = async () => {
     allMenuItems = await loadCSV();
+    if (tableNumberFromUrl) {
+        document.getElementById("tableNumber").value = tableNumberFromUrl;
+    }
+    // 最初のカテゴリだけ表示するよう修正
+    selectedCategory = allMenuItems[0]["カテゴリ"];
     renderCategories(allMenuItems);
     renderMenuItems();
     renderOrder();  // ← 必ずここで呼ぶ
