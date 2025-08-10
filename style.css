@@ -20,6 +20,22 @@ header {
     display: flex;
     height: 100vh;
 }
+.simple-button {
+  background-color: #f5f5f5;
+  color: #333;
+  font-size: 13px;
+  padding: 6px 12px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.simple-button:hover {
+  background-color: #e6e6e6;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
 
 #leftMenu {
     height: 100%;
@@ -28,6 +44,13 @@ header {
     background: #f0f0f0;
     padding: 10px;
     box-sizing: border-box;
+}
+#optionTitle {
+    font-size: 1.2em;
+    font-weight: bold;
+    margin-bottom: 10px;
+    align-self: flex-start;
+    margin-top: -10px; /* ← 上に寄せたい場合に調整 */
 }
 
 .category-buttons {
@@ -171,6 +194,7 @@ header {
 }
 
 .modal-content {
+    position: relative;
     background: white;
     padding: 15px;
     border-radius: 10px;
@@ -186,24 +210,30 @@ header {
 }
 
 .close-btn {
-    position: absolute;
-    top: 0px;
-    right: 10px;
-    background: none;
-    border: none;
-    font-size: 1.0rem;
-    font-weight: bold;
-    color: #e53935;
-    /* 赤色 */
-    cursor: pointer;
-    z-index: 10;
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font-size: 26px;
+  font-weight: bold;
+  background-color: #fff;
+  color: #333;
+  border: 2px solid #ccc;
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  text-align: center;
+  line-height: 30px;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  transition: all 0.2s ease-in-out;
 }
 
 .close-btn:hover {
-    color: #b71c1c;
-    /* 濃い赤（ホバー時） */
+  background-color: #f44336;
+  color: #fff;
+  border-color: #f44336;
+  transform: scale(1.1);
 }
-
 #confirmOrderBtn {
     display: block;
     width: 90%;

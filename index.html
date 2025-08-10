@@ -10,10 +10,10 @@
 
 <body>
   <header>
-     <span>注文ページ</span>
+    <span>注文ページ</span>
     <div class="table-number">
-        <span>テーブル番号：</span>
-        <input id="tableNumber" type="text" readonly />
+      <span>テーブル番号：</span>
+      <input id="tableNumber" type="text" readonly />
     </div>
   </header>
   <div class="wrapper">
@@ -54,10 +54,14 @@
     <!-- オプション選択用モーダル（最初は非表示） -->
     <div id="optionModal" class="modal">
       <div class="modal-content">
+        <div class="modal-header">
+          <button class="close-btn" onclick="closeModal()">✕</button>
+        </div>
         <h3 id="optionTitle"></h3>
         <div id="optionList"></div>
-        <button onclick="addOptionsToOrder()">オプションを追加</button>
-        <button onclick="closeModal()">閉じる</button>
+        <button class="simple-button" onclick="addOptionsToOrder()">✅オプション追加</button>
+        <button class="simple-button" onclick="addItemWithoutOptions()">オプションを追加せずに注文</button>
+        <!-- <button onclick="closeModal()">閉じる</button> -->
       </div>
     </div>
     <script src="menu.js"></script>

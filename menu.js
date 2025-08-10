@@ -6,6 +6,31 @@ const orders = {};
 const orderHistory = [];
 const urlParams = new URLSearchParams(window.location.search);
 const tableNumberFromUrl = urlParams.get('table');
+const groupId = sessionStorage.getItem("groupId") || "";
+const payload = {
+    orders,
+    groupId,
+    tableNumber,
+    // そのほか必要な情報
+};
+
+const orderData = {
+  table: tableNumberFromUrl,
+  groupId: getGroupId(),  // ← 追加
+  orders: orders,
+  timestamp: new Date().toISOString()
+};
+
+// ✅ トークン認証処理（無効なら即停止）
+const token = urlParams.get("token");
+
+// 仮の有効トークン一覧（必要に応じて変更)
+const VALID_TOKENS = ["abc123", "def456"];
+
+if (!token || !VALID_TOKENS.includes(token)) {
+  document.body.innerHTML = "<h2 style='color:red;text-align:center;margin-top:100px;'>アクセス権限がありません（無効なトークン）</h2>";
+  throw new Error("無効なトークンでブロックされました。");
+}
 
 async function loadCSV() {
     const res = await fetch(csvUrl);
@@ -105,11 +130,20 @@ function renderOrder() {
     let itemCount = 0;
     Object.entries(orders).forEach(([name, { count, price }]) => {
         const li = document.createElement("li");
-        li.innerHTML = `
-          ${name} x ${count} = ${price * count} 円
-          <button onclick="decreaseItem('${name}')">−</button>
-          <button onclick="removeItem('${name}')">削除</button>
-        `;
+        li.textContent = `${name} x ${count} = ${price * count} 円 `;
+
+        // −ボタン
+        const minusBtn = document.createElement("button");
+        minusBtn.textContent = "−";
+        minusBtn.addEventListener("click", () => decreaseItem(name));
+        li.appendChild(minusBtn);
+
+        // 削除ボタン
+        // const removeBtn = document.createElement("button");
+        // removeBtn.textContent = "削除";
+        // removeBtn.addEventListener("click", () => removeItem(name));
+        // li.appendChild(removeBtn);
+
         total += price * count;
         itemCount += count;
         list.appendChild(li);
@@ -156,13 +190,15 @@ function decreaseItem(name) {
         if (orders[name].count <= 0) {
             delete orders[name];
         }
-        sessionStorage.setItem('orders', JSON.stringify(orders));
+        const storageKey = `orders-${tableNumberFromUrl || 'default'}`;
+        sessionStorage.setItem(storageKey, JSON.stringify(orders));
         renderOrder();
     }
 }
 function removeItem(name) {
     delete orders[name];
-    sessionStorage.setItem('orders', JSON.stringify(orders));
+    const storageKey = `orders-${tableNumberFromUrl || 'default'}`;
+    sessionStorage.setItem(storageKey, JSON.stringify(orders));
     renderOrder();
 }
 function toggleOrderModal() {
@@ -199,7 +235,9 @@ function closeOrderModal() {
 }
 
 function closeModal() {
-    document.getElementById("optionModal").style.display = "none";
+    // document.getElementById("optionModal").style.display = "none";
+    const modal = document.getElementById("optionModal");
+    modal.style.display = modal.style.display === "none" ? "block" : "none";
 }
 
 function addOptionsToOrder() {
@@ -218,6 +256,12 @@ function addOptionsToOrder() {
         }
     });
 
+    //  チェックされたものが0なら警告（ここを変更）
+    if (selectedNames.length === 0) {
+        alert("オプションが追加されていません");
+        return;
+    }
+
     const fullName = selectedNames.length > 0
         ? `${baseName}（${selectedNames.join(", ")}）`
         : baseName;
@@ -235,6 +279,65 @@ function addOptionsToOrder() {
     alert("注文リストに追加されました。");
 }
 
+function addItemWithoutOptions() {
+    const baseName = selectedItem["商品名"];
+    const basePrice = parseInt(selectedItem["金額"]);
+
+    if (!orders[baseName]) {
+        orders[baseName] = { count: 1, price: basePrice };
+    } else {
+        orders[baseName].count++;
+    }
+
+    const storageKey = `orders-${tableNumberFromUrl || 'default'}`;
+    sessionStorage.setItem(storageKey, JSON.stringify(orders));
+    renderOrder();
+    closeModal();
+    alert("注文リストに追加されました。");
+}
+
+function getGroupId() {
+  let groupId = sessionStorage.getItem('groupId');
+  if (!groupId) {
+    groupId = 'G' + Date.now() + '-' + Math.floor(Math.random() * 100000);
+    sessionStorage.setItem('groupId', groupId);
+  }
+  return groupId;
+}
+
+function ensureGroupId() {
+    const urlParams = new URLSearchParams(window.location.search);
+    let groupId = urlParams.get("group");
+    if (!groupId) {
+        groupId = `grp-${Date.now()}`;
+        urlParams.set("group", groupId);
+        const newUrl = `${window.location.pathname}?${urlParams.toString()}`;
+        window.history.replaceState({}, "", newUrl);
+    }
+    sessionStorage.setItem("groupId", groupId);
+    return groupId;
+}
+
+function getTodaySheet() {
+  const today = new Date();
+  const sheetName = Utilities.formatDate(today, Session.getScriptTimeZone(), "yyyy-MM-dd");
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet) throw new Error(`シート「${sheetName}」が見つかりません。`);
+  return sheet;
+}
+
+function getPreviousTotal(sheet, tableNumber) {
+  const data = sheet.getDataRange().getValues();
+  let lastTotal = 0;
+  for (let i = data.length - 1; i >= 1; i--) {
+    if (data[i][1] == tableNumber) {  // [1] = テーブル番号列
+      lastTotal = data[i][5];         // [5] = 合計列
+      break;
+    }
+  }
+  return Number(lastTotal) || 0;
+}
 
 function submitOrder() {
     const historyKey = `order-history-${tableNumberFromUrl || 'default'}`;
@@ -244,7 +347,7 @@ function submitOrder() {
         .map(([name, { count }]) => `${name} x ${count}`)
         .join(", ");
     const total = document.getElementById("totalPrice").textContent;
-    storedHistory.push({ table: tableNumber, items, total });
+    // storedHistory.push({ table: tableNumber, items, total });
     sessionStorage.setItem(historyKey, JSON.stringify(storedHistory));
 
     if (!tableNumber) {
@@ -279,19 +382,11 @@ function submitOrder() {
     const endpoint = "https://script.google.com/macros/s/AKfycbw8ED-mVd7I8Vhw8l7oWh_beRFtRxk3-i0AHBR0K1EmkH8BWDFlTP3V58kF7h3KE7-5/exec";  // ←ここを自分のに変更！
     fetch(endpoint, {
         method: "POST",
-        body: JSON.stringify({ table: tableNumber, items, total }),
+        mode: "no-cors",
+        body: JSON.stringify({ table: tableNumber, items, total, groupId: getGroupId()}),
         headers: {
             "Content-Type": "application/json",
         },
-    }).then(() => {
-        alert("注文を送信しました！");
-        sessionStorage.removeItem(`orders-${tableNumberFromUrl || 'default'}`);
-        Object.keys(orders).forEach(key => delete orders[key]);
-        renderOrder();
-        toggleOrderModal();
-    }).catch(err => {
-        alert("送信に失敗しました");
-        console.error(err);
     });
 
     // ====== 注文リスト削除（テーブルごとに消すよう修正） ======
@@ -302,6 +397,25 @@ function submitOrder() {
     Object.keys(orders).forEach(key => delete orders[key]); // 注文データをクリア
     renderOrder(); // 表示を更新
 }
+function recordOrder(data) {
+  const sheet = getTodaySheet();
+  const prevTotal = getPreviousTotal(sheet, data.tableNumber);
+  const newTotal = prevTotal + data.subtotal;
+
+  sheet.appendRow([
+    new Date(),
+    data.tableNumber,
+    data.orderId,
+    data.items.join(", "),
+    data.subtotal,
+    newTotal
+  ]);
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+    const groupId = ensureGroupId();
+    console.log("このグループのID:", groupId);
+});
 
 window.onload = async () => {
     allMenuItems = await loadCSV();
