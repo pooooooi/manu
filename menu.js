@@ -1,430 +1,932 @@
-const csvUrl = "https://docs.google.com/spreadsheets/d/1dNk8uLhzl06UJeIsMRYoyLd_MAoHuIpV-qqYIyf8ZS8/export?format=csv&gid=100058082";
+﻿const appConfig = window.APP_CONFIG || {};
+const csvUrl =
+    appConfig.csvUrl ||
+    "https://docs.google.com/spreadsheets/d/1dNk8uLhzl06UJeIsMRYoyLd_MAoHuIpV-qqYIyf8ZS8/export?format=csv&gid=100058082";
+const endpoint =
+    appConfig.endpoint ||
+    "https://script.google.com/macros/s/AKfycbyvdOtISdx0J187OvHt6Jwf7Y8hW_UBEFehLkBJpxmEgn0JvF0jmt6m5TIzDiGknF8k/exec";
+const allowedTableSet = new Set(
+    (Array.isArray(appConfig.allowedTables) ? appConfig.allowedTables : [])
+        .map((v) => String(v || "").trim())
+        .filter(Boolean)
+);
+const startupRetryBatchSize = Math.max(1, Number.parseInt(String(appConfig.startupRetryBatchSize || "3"), 10) || 3);
 
 let allMenuItems = [];
 let selectedCategory = "";
+let isSubmitting = false;
+const sendQueueKey = "order-send-queue-v2";
+const legacySendQueueKey = "order-send-queue-v1";
 const orders = {};
 const orderHistory = [];
 const urlParams = new URLSearchParams(window.location.search);
-const tableNumberFromUrl = urlParams.get('table');
-const groupId = sessionStorage.getItem("groupId") || "";
-const payload = {
-    orders,
-    groupId,
-    tableNumber,
-    // そのほか必要な情報
-};
+const rawTableNumberFromUrl = String(urlParams.get("table") || "").trim();
+const tableNumberFromUrl = normalizeTableNumber(rawTableNumberFromUrl);
+const rawTableSigFromUrl = String(urlParams.get("sig") || "").trim();
+const tableSigFromUrl = normalizeTableSignature(rawTableSigFromUrl);
 
-const orderData = {
-  table: tableNumberFromUrl,
-  groupId: getGroupId(),  // ← 追加
-  orders: orders,
-  timestamp: new Date().toISOString()
-};
+function blockApp(message) {
+    document.body.innerHTML = `<h2 style="color:#b91c1c;text-align:center;margin:100px 16px;font-family:sans-serif;">${message}</h2>`;
+}
 
-// ✅ トークン認証処理（無効なら即停止）
-const token = urlParams.get("token");
+function normalizeTableNumber(raw) {
+    const value = String(raw || "").trim();
+    if (!value) return "";
+    if (!/^[A-Za-z0-9_-]{1,20}$/.test(value)) return "";
+    if (allowedTableSet.size > 0 && !allowedTableSet.has(value)) return "";
+    return value;
+}
 
-// 仮の有効トークン一覧（必要に応じて変更)
-const VALID_TOKENS = ["abc123", "def456"];
+function normalizeTableSignature(raw) {
+    const value = String(raw || "").trim();
+    if (!value) return "";
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(value)) return "";
+    return value;
+}
 
-if (!token || !VALID_TOKENS.includes(token)) {
-  document.body.innerHTML = "<h2 style='color:red;text-align:center;margin-top:100px;'>アクセス権限がありません（無効なトークン）</h2>";
-  throw new Error("無効なトークンでブロックされました。");
+function normalizeGroupId(raw) {
+    const value = String(raw || "").trim();
+    if (!value) return "";
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(value)) return "";
+    return value;
+}
+
+function readJsonStorage(storage, key, fallbackValue) {
+    try {
+        const raw = storage.getItem(key);
+        if (!raw) return fallbackValue;
+        return JSON.parse(raw);
+    } catch (_) {
+        return fallbackValue;
+    }
+}
+
+function getSendQueueKey() {
+    return `${sendQueueKey}-${tableNumberFromUrl}`;
+}
+
+function migrateLegacyQueueIfNeeded() {
+    const currentKey = getSendQueueKey();
+    const existing = readJsonStorage(localStorage, currentKey, null);
+    if (Array.isArray(existing) && existing.length > 0) return;
+
+    const legacy = readJsonStorage(localStorage, legacySendQueueKey, []);
+    if (!Array.isArray(legacy) || legacy.length === 0) return;
+
+    const keepLegacy = [];
+    const moveToCurrent = [];
+    legacy.forEach((item) => {
+        if (String(item && item.table || "") === tableNumberFromUrl) {
+            moveToCurrent.push(item);
+        } else {
+            keepLegacy.push(item);
+        }
+    });
+    if (moveToCurrent.length > 0) {
+        localStorage.setItem(currentKey, JSON.stringify(moveToCurrent));
+    }
+    localStorage.setItem(legacySendQueueKey, JSON.stringify(keepLegacy));
+}
+
+function toNumber(value) {
+    const n = Number.parseInt(String(value ?? "").trim(), 10);
+    return Number.isFinite(n) ? n : 0;
+}
+
+function parseTruthyFlag(value) {
+    const s = String(value || "").trim().toLowerCase();
+    return s === "1" || s === "true" || s === "yes" || s === "on" || s === "売切" || s === "soldout";
+}
+
+function isSoldOutItem(item) {
+    return parseTruthyFlag(item["売切"]);
+}
+
+function showToast(message, type = "info") {
+    const container = document.getElementById("toastContainer");
+    if (!container) return;
+    const toast = document.createElement("div");
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    window.setTimeout(() => {
+        toast.style.opacity = "0";
+        toast.style.transform = "translateY(-8px)";
+        window.setTimeout(() => toast.remove(), 180);
+    }, 2200);
+}
+
+function normalizeImageUrl(rawUrl) {
+    const value = String(rawUrl ?? "").trim();
+    if (!value) return "";
+
+    if (value.startsWith("//")) {
+        return `${window.location.protocol}${value}`;
+    }
+
+    const driveFileMatch = value.match(/https?:\/\/drive\.google\.com\/file\/d\/([^/]+)/i);
+    if (driveFileMatch) {
+        return `https://drive.google.com/uc?export=view&id=${driveFileMatch[1]}`;
+    }
+
+    const driveOpenMatch = value.match(/https?:\/\/drive\.google\.com\/.*[?&]id=([a-zA-Z0-9_-]+)/i);
+    if (driveOpenMatch) {
+        return `https://drive.google.com/uc?export=view&id=${driveOpenMatch[1]}`;
+    }
+
+    if (/^https?:\/\//i.test(value)) {
+        return value;
+    }
+
+    try {
+        return new URL(value, window.location.href).href;
+    } catch {
+        return "";
+    }
+}
+
+function getStorageKey() {
+    return `orders-${tableNumberFromUrl}`;
+}
+
+function getHistoryKey() {
+    return `order-history-${tableNumberFromUrl}`;
+}
+
+function parseOrderName(name) {
+    const raw = String(name || "").trim();
+    const match = raw.match(/^(.*?)(?:・・.*)・・?$/);
+    if (!match) return { itemName: raw, options: [] };
+    const itemName = (match[1] || "").trim();
+    const options = (match[2] || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    return { itemName, options };
+}
+
+function normalizeOrderEntry(name, entry) {
+    const count = Math.max(0, toNumber(entry.count));
+    const price = Math.max(0, toNumber(entry.price));
+    const parsed = parseOrderName(name);
+    const itemName = String(entry.itemName || parsed.itemName || "").trim();
+    const options = Array.isArray(entry.options)
+        ? entry.options.map((s) => String(s).trim()).filter(Boolean)
+        : parsed.options;
+    return { count, price, itemName, options };
+}
+
+function loadSendQueue() {
+    const queue = readJsonStorage(localStorage, getSendQueueKey(), []);
+    return Array.isArray(queue) ? queue : [];
+}
+
+function saveSendQueue(queue) {
+    localStorage.setItem(getSendQueueKey(), JSON.stringify(queue));
+    renderQueueBadge();
+}
+
+function enqueueOrder(payload) {
+    const queue = loadSendQueue();
+    queue.push(payload);
+    saveSendQueue(queue);
+}
+
+function dequeueOrderById(orderId) {
+    const queue = loadSendQueue().filter((q) => q.orderId !== orderId);
+    saveSendQueue(queue);
+}
+
+function renderQueueBadge() {
+    const btn = document.getElementById("retryQueueBtn");
+    if (!btn) return;
+    const count = loadSendQueue().length;
+    btn.textContent = `再送キュー ${count}`;
+    btn.style.display = count > 0 ? "inline-block" : "none";
+}
+
+async function sendOrderPayload(payload) {
+    const params = new URLSearchParams();
+    params.set("table", String(payload.table || ""));
+    params.set("items", String(payload.items || ""));
+    params.set("total", String(payload.total || 0));
+    params.set("groupId", String(payload.groupId || ""));
+    params.set("orderId", String(payload.orderId || ""));
+    params.set("orderLines", JSON.stringify(payload.orderLines || []));
+    const sig = String(payload.sig || tableSigFromUrl || "").trim();
+    if (sig) params.set("sig", sig);
+    const legacyToken = String(payload.token || "").trim();
+    if (legacyToken) params.set("token", legacyToken);
+
+    // GAS(Web app) ではCORSヘッダー制御が難しいため、
+    // simple request + no-cors で送信する。
+    await fetch(endpoint, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: params.toString()
+    });
+}
+
+async function flushSendQueue(options = {}) {
+    const queue = loadSendQueue();
+    if (queue.length === 0) return { sent: 0, remaining: 0 };
+    const storeStatus = await fetchStoreStatus();
+    if (!storeStatus.orderingEnabled) return { sent: 0, remaining: queue.length };
+
+    const maxToSend = Math.max(1, Number.parseInt(String(options.maxToSend || queue.length), 10) || queue.length);
+    let sentCount = 0;
+    let attempted = 0;
+    for (const payload of queue) {
+        if (attempted >= maxToSend) break;
+        try {
+            await sendOrderPayload(payload);
+            const accepted = await waitOrderAccepted(payload.orderId, payload.date || currentDateText());
+            if (!accepted) {
+                throw new Error("order not accepted yet");
+            }
+            dequeueOrderById(payload.orderId);
+            sentCount++;
+        } catch {
+            // 再送失敗時は残す
+        }
+        attempted++;
+    }
+    return { sent: sentCount, remaining: loadSendQueue().length };
+}
+
+async function retryPendingOrders() {
+    const { sent, remaining } = await flushSendQueue({ maxToSend: 50 });
+    if (sent > 0 && remaining === 0) {
+        showToast("未送信の注文をすべて再送しました。", "success");
+        return;
+    }
+    if (sent > 0) {
+        showToast(`一部再送しました。残り ${remaining} 件です。`, "info");
+        return;
+    }
+    showToast("再送できませんでした。通信状況を確認してください。", "error");
+}
+
+async function flushSendQueueInBackground() {
+    try {
+        const result = await flushSendQueue({ maxToSend: startupRetryBatchSize });
+        if (result.sent > 0) {
+            showToast(`未送信注文を ${result.sent} 件再送しました。`, "info");
+        }
+    } catch (_) {
+        // 起動時再送は非同期で静かに失敗させる
+    }
+}
+
+async function fetchStoreStatus() {
+    try {
+        const data = await jsonpFetch(`${endpoint}?action=getStoreStatus`);
+        return {
+            orderingEnabled: !!(data && data.result === "OK" && data.orderingEnabled)
+        };
+    } catch (_) {
+        // fail-closed: ステータス確認不能時は注文停止扱い
+        return { orderingEnabled: false };
+    }
+}
+
+async function ensureStoreOpenForOrder() {
+    const status = await fetchStoreStatus();
+    if (!status.orderingEnabled) {
+        throw new Error("store closed");
+    }
+}
+
+function parseCSV(text) {
+    const rows = [];
+    let row = [];
+    let cell = "";
+    let inQuotes = false;
+    const normalized = text.replace(/\r\n/g, "\n");
+
+    for (let i = 0; i < normalized.length; i++) {
+        const ch = normalized[i];
+        const next = normalized[i + 1];
+
+        if (ch === '"') {
+            if (inQuotes && next === '"') {
+                cell += '"';
+                i++;
+            } else {
+                inQuotes = !inQuotes;
+            }
+            continue;
+        }
+
+        if (ch === "," && !inQuotes) {
+            row.push(cell);
+            cell = "";
+            continue;
+        }
+
+        if (ch === "\n" && !inQuotes) {
+            row.push(cell);
+            rows.push(row);
+            row = [];
+            cell = "";
+            continue;
+        }
+
+        cell += ch;
+    }
+
+    if (cell.length > 0 || row.length > 0) {
+        row.push(cell);
+        rows.push(row);
+    }
+    return rows;
+}
+
+function jsonpFetch(url) {
+    return new Promise((resolve, reject) => {
+        const callbackName = `menuCb${Date.now()}${Math.floor(Math.random() * 10000)}`;
+        const script = document.createElement("script");
+        const timeout = window.setTimeout(() => {
+            cleanup();
+            reject(new Error("timeout"));
+        }, 12000);
+
+        function cleanup() {
+            window.clearTimeout(timeout);
+            delete window[callbackName];
+            if (script.parentNode) {
+                script.parentNode.removeChild(script);
+            }
+        }
+
+        window[callbackName] = (data) => {
+            cleanup();
+            resolve(data);
+        };
+
+        script.onerror = () => {
+            cleanup();
+            reject(new Error("network error"));
+        };
+
+        const sep = url.indexOf("?") >= 0 ? "&" : "?";
+        script.src = `${url}${sep}callback=${callbackName}`;
+        document.body.appendChild(script);
+    });
+}
+
+function currentDateText() {
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Tokyo",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+    }).formatToParts(new Date());
+    const y = (parts.find((p) => p.type === "year") || {}).value || "";
+    const m = (parts.find((p) => p.type === "month") || {}).value || "";
+    const day = (parts.find((p) => p.type === "day") || {}).value || "";
+    return `${y}-${m}-${day}`;
 }
 
 async function loadCSV() {
     const res = await fetch(csvUrl);
+    if (!res.ok) {
+        throw new Error(`CSV取得に失敗: ${res.status}`);
+    }
     const text = await res.text();
+    const rows = parseCSV(text).filter((r) => r.some((c) => String(c).trim() !== ""));
+    if (rows.length < 2) {
+        return [];
+    }
 
-    const rows = text.trim().split(/\r?\n/).map(r => r.split(','));
-    const headers = rows[0].map(h => h.trim().replace(/^"|"$/g, ''));
-    return rows.slice(1).map(r => {
+    const headers = rows[0].map((h) => String(h).trim());
+    return rows.slice(1).map((r) => {
         const obj = {};
         headers.forEach((h, i) => {
-            obj[h] = r[i]?.trim().replace(/^"|"$/g, '');
+            obj[h] = (r[i] ?? "").trim();
         });
         return obj;
     });
 }
 
-function renderCategories(items) {
-    const categories = [...new Set(items.map(item => item["カテゴリ"]))];
-    const btnContainer = document.getElementById("categoryButtons");
-    btnContainer.innerHTML = "";
-
-    categories.forEach(cat => {
-        const btn = document.createElement("button");
-        btn.textContent = cat;
-        btn.classList.add("category-btn");
-
-        // 選択されたカテゴリをクリックしたら色変更
-        btn.onclick = () => {
-            selectedCategory = cat;
-            renderMenuItems();
-            document.querySelectorAll('.category-buttons button').forEach(b => b.classList.remove('selected'));
-            btn.classList.add('selected');
-        };
-
-        btnContainer.appendChild(btn);
-
-        // 最初のカテゴリボタンを選択状態にしておく
-        if (cat === selectedCategory) {
-            btn.classList.add('selected');
-        }
+function loadOrdersFromStorage() {
+    const storedOrders = readJsonStorage(sessionStorage, getStorageKey(), {});
+    Object.keys(orders).forEach((key) => delete orders[key]);
+    if (!storedOrders || typeof storedOrders !== "object" || Array.isArray(storedOrders)) return;
+    Object.entries(storedOrders).forEach(([name, entry]) => {
+        orders[name] = normalizeOrderEntry(name, entry || {});
     });
 }
 
+function saveOrdersToStorage() {
+    sessionStorage.setItem(getStorageKey(), JSON.stringify(orders));
+}
+
+function loadHistoryFromStorage() {
+    const storedHistory = readJsonStorage(sessionStorage, getHistoryKey(), []);
+    orderHistory.length = 0;
+    if (Array.isArray(storedHistory)) {
+        orderHistory.push(...storedHistory);
+    }
+}
+
+function saveHistoryToStorage() {
+    sessionStorage.setItem(getHistoryKey(), JSON.stringify(orderHistory));
+}
+
+function renderCategories(items) {
+    const categories = [...new Set(items.map((item) => item["カテゴリ"]).filter(Boolean))];
+    const btnContainer = document.getElementById("categoryButtons");
+    btnContainer.innerHTML = "";
+
+    categories.forEach((cat) => {
+        const btn = document.createElement("button");
+        btn.textContent = cat;
+        btn.classList.add("category-btn");
+        btn.onclick = () => {
+            selectedCategory = cat;
+            renderMenuItems();
+            document
+                .querySelectorAll(".category-buttons button")
+                .forEach((b) => b.classList.remove("selected"));
+            btn.classList.add("selected");
+        };
+
+        if (cat === selectedCategory) {
+            btn.classList.add("selected");
+        }
+        btnContainer.appendChild(btn);
+    });
+}
 
 function renderMenuItems() {
     const container = document.getElementById("menuContainer");
     container.innerHTML = "";
 
     const items = selectedCategory
-        ? allMenuItems.filter(item => item["カテゴリ"] === selectedCategory)
+        ? allMenuItems.filter((item) => item["カテゴリ"] === selectedCategory)
         : allMenuItems;
 
-    items.forEach(item => {
+    items.forEach((item) => {
         const div = document.createElement("div");
         div.className = "menuItem";
-        div.innerHTML = `
-      <img src="${item["画像URL"]}" alt="${item["商品名"]}" />
-      <div class="menu-text">
-      <h4>${item["商品名"]}</h4>
-      <p>${item["金額"]} 円</p>
-      </div>
-    `;
-        div.onclick = () => showOptions(item);
+        const soldOut = isSoldOutItem(item);
+
+        const img = document.createElement("img");
+        img.alt = item["商品名"] || "";
+        img.loading = "lazy";
+        img.referrerPolicy = "no-referrer";
+        const imageUrl = normalizeImageUrl(item["画像URL"]);
+        if (imageUrl) {
+            img.src = imageUrl;
+        } else {
+            img.classList.add("is-empty");
+        }
+        img.onerror = () => img.classList.add("is-empty");
+
+        const text = document.createElement("div");
+        text.className = "menu-text";
+        const h4 = document.createElement("h4");
+        h4.textContent = item["商品名"] || "Item";
+        const p = document.createElement("p");
+        p.textContent = soldOut ? "売切れ" : `${toNumber(item["金額"])} 円`;
+        text.appendChild(h4);
+        text.appendChild(p);
+
+        div.appendChild(img);
+        div.appendChild(text);
+        if (soldOut) {
+            div.style.opacity = "0.45";
+            div.style.cursor = "not-allowed";
+        } else {
+            div.onclick = () => showOptions(item);
+        }
         container.appendChild(div);
     });
 }
 
-// function renderMenuItems() {
-//     const container = document.getElementById("menuContainer");
-//     container.innerHTML = "";
-//     allMenuItems.forEach(item => {
-//         const btn = document.createElement("button");
-//         btn.textContent = item["商品名"];
-//         btn.onclick = () => showOptions(item);
-//         container.appendChild(btn);
-//     });
-// }
-
-function addToOrder(item) {
-    const name = item["商品名"];
-    const price = parseInt(item["金額"]);
-    if (!orders[name]) {
-        orders[name] = { count: 1, price };
-    } else {
-        orders[name].count++;
-    }
-    renderOrder();
-}
-
 function renderOrder() {
-    const storageKey = `orders-${tableNumberFromUrl || 'default'}`;
-    const storedOrders = JSON.parse(sessionStorage.getItem(storageKey)) || {};
-    Object.assign(orders, storedOrders);
+    loadOrdersFromStorage();
     const list = document.getElementById("orderItems");
     list.innerHTML = "";
     let total = 0;
     let itemCount = 0;
-    Object.entries(orders).forEach(([name, { count, price }]) => {
-        const li = document.createElement("li");
-        li.textContent = `${name} x ${count} = ${price * count} 円 `;
 
-        // −ボタン
+    Object.entries(orders).forEach(([name, order]) => {
+        const count = toNumber(order.count);
+        const price = toNumber(order.price);
+        const li = document.createElement("li");
+        li.textContent = `${name} x ${count} = ${price * count} 円`;
+
         const minusBtn = document.createElement("button");
-        minusBtn.textContent = "−";
+        minusBtn.type = "button";
+        minusBtn.textContent = "-";
         minusBtn.addEventListener("click", () => decreaseItem(name));
         li.appendChild(minusBtn);
-
-        // 削除ボタン
-        // const removeBtn = document.createElement("button");
-        // removeBtn.textContent = "削除";
-        // removeBtn.addEventListener("click", () => removeItem(name));
-        // li.appendChild(removeBtn);
 
         total += price * count;
         itemCount += count;
         list.appendChild(li);
     });
-    document.getElementById("totalPrice").textContent = total;
-    // バッジの更新
+
+    document.getElementById("totalPrice").textContent = String(total);
     const badge = document.getElementById("orderBadge");
-    if (itemCount > 0) {
-        badge.textContent = itemCount;
-        badge.style.display = "inline-block";
-    } else {
-        badge.textContent = "0";
-        badge.style.display = "inline-block";
-    }
+    badge.textContent = String(itemCount);
+    badge.style.display = "inline-block";
 }
+
 function renderHistory() {
     const historyList = document.getElementById("historyItems");
     historyList.innerHTML = "";
     let total = 0;
 
-    orderHistory.forEach(h => {
+    orderHistory.forEach((h) => {
         const li = document.createElement("li");
-        li.textContent = `テーブル${h.table}：${h.items} 合計${h.total}円`;
+        li.textContent = `テーブル${h.table}: ${h.items} 合計 ${h.total}円`;
         historyList.appendChild(li);
-        total += parseInt(h.total);
+        total += toNumber(h.total);
     });
 
-    document.getElementById("historyTotal").textContent = total;
+    document.getElementById("historyTotal").textContent = String(total);
 }
+
 function clearHistory() {
-    if (!confirm("本当に清算して、注文履歴を削除しますか？")) return;
-
-    const historyKey = `order-history-${tableNumberFromUrl || 'default'}`;
-    sessionStorage.removeItem(historyKey);  // ← テーブルごとの履歴だけ削除
-
-    orderHistory.length = 0;  // メモリ上の履歴も消す
+    if (!confirm("本当に履歴をクリアしますか？")) return;
+    sessionStorage.removeItem(getHistoryKey());
+    orderHistory.length = 0;
     renderHistory();
+    showToast("注文履歴をクリアしました。", "success");
+}
 
-    alert("注文履歴をクリアしました。");
-}
 function decreaseItem(name) {
-    if (orders[name]) {
-        orders[name].count--;
-        if (orders[name].count <= 0) {
-            delete orders[name];
-        }
-        const storageKey = `orders-${tableNumberFromUrl || 'default'}`;
-        sessionStorage.setItem(storageKey, JSON.stringify(orders));
-        renderOrder();
+    if (!orders[name]) return;
+    orders[name].count = toNumber(orders[name].count) - 1;
+    if (orders[name].count <= 0) {
+        delete orders[name];
     }
-}
-function removeItem(name) {
-    delete orders[name];
-    const storageKey = `orders-${tableNumberFromUrl || 'default'}`;
-    sessionStorage.setItem(storageKey, JSON.stringify(orders));
+    saveOrdersToStorage();
     renderOrder();
 }
+
 function toggleOrderModal() {
     const modal = document.getElementById("orderModal");
-    modal.style.display = modal.style.display === "none" ? "block" : "none";
+    modal.style.display = modal.style.display === "block" ? "none" : "block";
 }
+
 function toggleHistoryModal() {
     const modal = document.getElementById("historyModal");
-    modal.style.display = modal.style.display === "none" ? "block" : "none";
+    if (modal.style.display === "block") {
+        modal.style.display = "none";
+        return;
+    }
+    loadHistoryFromStorage();
+    renderHistory();
+    modal.style.display = "block";
 }
+
 let selectedItem = null;
 
 function showOptions(item) {
     selectedItem = item;
-    document.getElementById("optionTitle").textContent = item["商品名"];
+    document.getElementById("optionTitle").textContent = `${item["商品名"] || ""} ${toNumber(item["金額"])}円`;
     const optionList = document.getElementById("optionList");
+    const addOptionsBtn = document.getElementById("addOptionsBtn");
+    const addWithoutOptionsBtn = document.getElementById("addWithoutOptionsBtn");
+    const optionImageWrap = document.getElementById("optionImageWrap");
+    const optionImage = document.getElementById("optionImage");
     optionList.innerHTML = "";
 
+    const imageUrl = normalizeImageUrl(item["画像URL"]);
+    if (optionImageWrap && optionImage) {
+        if (imageUrl) {
+            optionImage.src = imageUrl;
+            optionImage.alt = item["商品名"] || "";
+            optionImageWrap.classList.add("is-visible");
+            optionImage.onerror = () => {
+                optionImageWrap.classList.remove("is-visible");
+                optionImage.removeAttribute("src");
+            };
+        } else {
+            optionImageWrap.classList.remove("is-visible");
+            optionImage.removeAttribute("src");
+            optionImage.alt = "";
+        }
+    }
+
     let i = 1;
+    let optionCount = 0;
     while (item[`オプション${i}`]) {
         const name = item[`オプション${i}`];
-        const price = item[`オプション${i}金額`] || 0;
+        const price = toNumber(item[`オプション${i}金額`]);
+
         const label = document.createElement("label");
-        label.innerHTML = `<input type="checkbox" value="${name}:${price}"> ${name}（+${price}円）`;
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.value = `opt-${i}`;
+        input.dataset.optionName = String(name || "");
+        input.dataset.optionPrice = String(price);
+        label.appendChild(input);
+        label.appendChild(document.createTextNode(` ${name} (+${price}円)`));
+
         optionList.appendChild(label);
         optionList.appendChild(document.createElement("br"));
+        optionCount++;
         i++;
+    }
+
+    if (addOptionsBtn) {
+        addOptionsBtn.style.display = optionCount > 0 ? "inline-block" : "none";
+    }
+    if (addWithoutOptionsBtn) {
+        addWithoutOptionsBtn.style.display = "inline-block";
+    }
+    if (optionCount === 0) {
+        optionList.textContent = "この商品はオプションを選べません。";
     }
 
     document.getElementById("optionModal").style.display = "flex";
 }
-function closeOrderModal() {
-    document.getElementById("orderModal").style.display = "none";
-}
 
 function closeModal() {
-    // document.getElementById("optionModal").style.display = "none";
-    const modal = document.getElementById("optionModal");
-    modal.style.display = modal.style.display === "none" ? "block" : "none";
+    const addOptionsBtn = document.getElementById("addOptionsBtn");
+    const addWithoutOptionsBtn = document.getElementById("addWithoutOptionsBtn");
+    const optionImageWrap = document.getElementById("optionImageWrap");
+    const optionImage = document.getElementById("optionImage");
+    if (addOptionsBtn) addOptionsBtn.style.display = "inline-block";
+    if (addWithoutOptionsBtn) addWithoutOptionsBtn.style.display = "inline-block";
+    if (optionImageWrap) optionImageWrap.classList.remove("is-visible");
+    if (optionImage) {
+        optionImage.removeAttribute("src");
+        optionImage.alt = "";
+    }
+    document.getElementById("optionModal").style.display = "none";
 }
 
 function addOptionsToOrder() {
-    const baseName = selectedItem["商品名"];
-    const basePrice = parseInt(selectedItem["金額"]);
-
+    if (!selectedItem) return;
+    const baseName = selectedItem["商品名"] || "Item";
+    const basePrice = toNumber(selectedItem["金額"]);
     const checkboxes = document.querySelectorAll('#optionList input[type="checkbox"]');
-    let selectedNames = [];
+    const selectedNames = [];
     let extraPrice = 0;
 
-    checkboxes.forEach(cb => {
+    checkboxes.forEach((cb) => {
         if (cb.checked) {
-            const [name, price] = cb.value.split(':');
+            const name = String(cb.dataset.optionName || "").trim();
+            const price = cb.dataset.optionPrice;
+            if (!name) return;
             selectedNames.push(name);
-            extraPrice += parseInt(price);
+            extraPrice += toNumber(price);
         }
     });
 
-    //  チェックされたものが0なら警告（ここを変更）
     if (selectedNames.length === 0) {
-        alert("オプションが追加されていません");
+        showToast("オプションを1つ以上選択してください。", "error");
         return;
     }
 
-    const fullName = selectedNames.length > 0
-        ? `${baseName}（${selectedNames.join(", ")}）`
-        : baseName;
-
+    const fullName = `${baseName}（${selectedNames.join(", ")}）`;
     if (!orders[fullName]) {
-        orders[fullName] = { count: 1, price: basePrice + extraPrice };
+        orders[fullName] = {
+            count: 1,
+            price: basePrice + extraPrice,
+            itemName: baseName,
+            options: [...selectedNames]
+        };
     } else {
-        orders[fullName].count++;
+        orders[fullName].count = toNumber(orders[fullName].count) + 1;
     }
 
-    const storageKey = `orders-${tableNumberFromUrl || 'default'}`;
-    sessionStorage.setItem(storageKey, JSON.stringify(orders));
+    saveOrdersToStorage();
     renderOrder();
     closeModal();
-    alert("注文リストに追加されました。");
+    showToast("注文リストに追加しました。", "success");
 }
 
 function addItemWithoutOptions() {
-    const baseName = selectedItem["商品名"];
-    const basePrice = parseInt(selectedItem["金額"]);
+    if (!selectedItem) return;
+    const baseName = selectedItem["商品名"] || "Item";
+    const basePrice = toNumber(selectedItem["金額"]);
 
     if (!orders[baseName]) {
-        orders[baseName] = { count: 1, price: basePrice };
+        orders[baseName] = {
+            count: 1,
+            price: basePrice,
+            itemName: baseName,
+            options: []
+        };
     } else {
-        orders[baseName].count++;
+        orders[baseName].count = toNumber(orders[baseName].count) + 1;
     }
 
-    const storageKey = `orders-${tableNumberFromUrl || 'default'}`;
-    sessionStorage.setItem(storageKey, JSON.stringify(orders));
+    saveOrdersToStorage();
     renderOrder();
     closeModal();
-    alert("注文リストに追加されました。");
+    showToast("注文リストに追加しました。", "success");
 }
 
 function getGroupId() {
-  let groupId = sessionStorage.getItem('groupId');
-  if (!groupId) {
-    groupId = 'G' + Date.now() + '-' + Math.floor(Math.random() * 100000);
-    sessionStorage.setItem('groupId', groupId);
-  }
-  return groupId;
+    const groupId = normalizeGroupId(sessionStorage.getItem("groupId"));
+    if (groupId) return groupId;
+    return ensureGroupId();
+}
+
+function createGroupId() {
+    return `grp-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
 }
 
 function ensureGroupId() {
-    const urlParams = new URLSearchParams(window.location.search);
-    let groupId = urlParams.get("group");
+    const params = new URLSearchParams(window.location.search);
+    let groupId = normalizeGroupId(params.get("group"));
     if (!groupId) {
-        groupId = `grp-${Date.now()}`;
-        urlParams.set("group", groupId);
-        const newUrl = `${window.location.pathname}?${urlParams.toString()}`;
+        groupId = createGroupId();
+        params.set("group", groupId);
+        const newUrl = `${window.location.pathname}?${params.toString()}`;
         window.history.replaceState({}, "", newUrl);
     }
     sessionStorage.setItem("groupId", groupId);
     return groupId;
 }
 
-function getTodaySheet() {
-  const today = new Date();
-  const sheetName = Utilities.formatDate(today, Session.getScriptTimeZone(), "yyyy-MM-dd");
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) throw new Error(`シート「${sheetName}」が見つかりません。`);
-  return sheet;
+function rotateGroupId() {
+    const newGroupId = createGroupId();
+    const params = new URLSearchParams(window.location.search);
+    params.set("group", newGroupId);
+    const newUrl = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState({}, "", newUrl);
+    sessionStorage.setItem("groupId", newGroupId);
+    return newGroupId;
 }
 
-function getPreviousTotal(sheet, tableNumber) {
-  const data = sheet.getDataRange().getValues();
-  let lastTotal = 0;
-  for (let i = data.length - 1; i >= 1; i--) {
-    if (data[i][1] == tableNumber) {  // [1] = テーブル番号列
-      lastTotal = data[i][5];         // [5] = 合計列
-      break;
+async function ensureCurrentGroupIsActive(tableNumber) {
+    const current = getGroupId();
+    const url = `${endpoint}?action=checkGroupStatus&date=${encodeURIComponent(
+        currentDateText()
+    )}&table=${encodeURIComponent(tableNumber)}&groupId=${encodeURIComponent(
+        current
+    )}&sig=${encodeURIComponent(tableSigFromUrl)}`;
+    try {
+        const data = await jsonpFetch(url);
+        if (data && data.result === "OK" && data.status === "会計済") {
+            return rotateGroupId();
+        }
+    } catch (_) {
+        // 確認失敗時は現行groupを維持
     }
-  }
-  return Number(lastTotal) || 0;
+    return current;
 }
 
-function submitOrder() {
-    const historyKey = `order-history-${tableNumberFromUrl || 'default'}`;
-    const storedHistory = JSON.parse(sessionStorage.getItem(historyKey)) || [];
-    const tableNumber = document.getElementById("tableNumber").value;
-    const items = Object.entries(orders)
-        .map(([name, { count }]) => `${name} x ${count}`)
-        .join(", ");
-    const total = document.getElementById("totalPrice").textContent;
-    // storedHistory.push({ table: tableNumber, items, total });
-    sessionStorage.setItem(historyKey, JSON.stringify(storedHistory));
+async function waitOrderAccepted(orderId, dateText) {
+    const started = Date.now();
+    while (Date.now() - started < 12000) {
+        const url = `${endpoint}?action=checkOrder&date=${encodeURIComponent(
+            dateText
+        )}&table=${encodeURIComponent(tableNumberFromUrl)}&orderId=${encodeURIComponent(
+            orderId
+        )}&sig=${encodeURIComponent(tableSigFromUrl)}`;
+        const data = await jsonpFetch(url);
+        if (data && data.result === "OK" && data.exists) return true;
+        await new Promise((r) => window.setTimeout(r, 700));
+    }
+    return false;
+}
 
+async function submitOrder() {
+    if (isSubmitting) return;
+    const tableNumber = document.getElementById("tableNumber").value;
     if (!tableNumber) {
-        alert("テーブル番号を入力してください");
+        showToast("テーブル番号が見つかりません。", "error");
         return;
     }
-    if (!confirm("注文を確定します。よろしいですか？")) {
-        return; // 「いいえ」の場合は何もしない
+    if (!confirm("注文を送信します。よろしいですか？")) return;
+    try {
+        await ensureStoreOpenForOrder();
+    } catch (_) {
+        showToast("現在は注文を受け付けていません。", "error");
+        return;
     }
 
+    loadOrdersFromStorage();
+    const items = Object.entries(orders)
+        .map(([name, { count }]) => `${name} x ${toNumber(count)}`)
+        .join(", ");
+    const total = toNumber(document.getElementById("totalPrice").textContent);
+    if (!items) {
+        showToast("注文が空です。", "error");
+        return;
+    }
+    const orderLines = Object.entries(orders).map(([displayName, entry]) => ({
+        displayName,
+        itemName: String(entry.itemName || "").trim(),
+        options: Array.isArray(entry.options) ? entry.options : [],
+        quantity: Math.max(1, toNumber(entry.count))
+    }));
 
-    // ====== 注文履歴へ追加（テーブルごとに保存） ======
-    storedHistory.push({ table: tableNumber, items, total });
-    sessionStorage.setItem(historyKey, JSON.stringify(storedHistory));
+    const dateText = currentDateText();
+    const activeGroupId = await ensureCurrentGroupIsActive(tableNumber);
+    const payload = {
+        orderId: `o-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+        date: dateText,
+        table: tableNumber,
+        items,
+        total,
+        groupId: activeGroupId,
+        sig: tableSigFromUrl,
+        orderLines
+    };
 
-    orderHistory.length = 0;
-    orderHistory.push(...storedHistory);
+    const confirmBtn = document.getElementById("confirmOrderBtn");
+    const originalLabel = confirmBtn ? confirmBtn.textContent : "";
+    let sentSuccessfully = false;
+
+    try {
+        isSubmitting = true;
+        if (confirmBtn) {
+            confirmBtn.disabled = true;
+            confirmBtn.textContent = "送信中...";
+        }
+        await sendOrderPayload(payload);
+        const accepted = await waitOrderAccepted(payload.orderId, dateText);
+        if (!accepted) {
+            throw new Error("order not accepted yet");
+        }
+        sentSuccessfully = true;
+    } catch (error) {
+        console.error(error);
+        if (String(error && error.message || "").indexOf("store closed") >= 0) {
+            showToast("現在は注文を受け付けていません。", "error");
+        } else {
+            try {
+                enqueueOrder(payload);
+                showToast("送信に失敗したため、再送キューに保存しました。", "error");
+            } catch (queueError) {
+                console.error(queueError);
+                showToast("送信と再送保存に失敗しました。通信状況を確認してください。", "error");
+            }
+        }
+        return;
+    } finally {
+        isSubmitting = false;
+        if (confirmBtn) {
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = originalLabel;
+        }
+        renderQueueBadge();
+    }
+
+    if (!sentSuccessfully) return;
+
+    loadHistoryFromStorage();
+    orderHistory.push({ table: tableNumber, items, total });
+    saveHistoryToStorage();
     renderHistory();
-    // const formUrl = "https://docs.google.com/forms/d/e/1FAIpQLScbYOi6dsyUuIXclTKtrr6DeeZMg_WYXzNCFELm5hay0hrx4g/formResponse";
-    // const data = new FormData();
-    // data.append("entry.408172505", tableNumber);
-    // data.append("entry.1132597987", items);
-    // data.append("entry.418961724", total);
 
-    // fetch(formUrl, {
-    //     method: "POST",
-    //     mode: "no-cors",
-    //     body: data,
-    // });
+    sessionStorage.removeItem(getStorageKey());
+    Object.keys(orders).forEach((key) => delete orders[key]);
+    renderOrder();
+    toggleOrderModal();
+    showToast("注文を送信しました。", "success");
+}
 
-    // ✅ GAS APIに送信
-    const endpoint = "https://script.google.com/macros/s/AKfycbw8ED-mVd7I8Vhw8l7oWh_beRFtRxk3-i0AHBR0K1EmkH8BWDFlTP3V58kF7h3KE7-5/exec";  // ←ここを自分のに変更！
-    fetch(endpoint, {
-        method: "POST",
-        mode: "no-cors",
-        body: JSON.stringify({ table: tableNumber, items, total, groupId: getGroupId()}),
-        headers: {
-            "Content-Type": "application/json",
-        },
+window.addEventListener("DOMContentLoaded", async () => {
+    if (!tableNumberFromUrl) {
+        blockApp("Missing or invalid table parameter. Open with ?table=T01");
+        return;
+    }
+    if (!tableSigFromUrl) {
+        blockApp("Missing or invalid signature parameter. Open with ?table=T01&sig=...");
+        return;
+    }
+
+    ensureGroupId();
+    migrateLegacyQueueIfNeeded();
+    renderQueueBadge();
+    if (navigator.onLine) {
+        window.setTimeout(() => {
+            flushSendQueueInBackground();
+        }, 0);
+    }
+    window.addEventListener("online", () => {
+        flushSendQueueInBackground();
     });
 
-    // ====== 注文リスト削除（テーブルごとに消すよう修正） ======
-    const storageKey = `orders-${tableNumberFromUrl || 'default'}`;
-    sessionStorage.removeItem(storageKey);
-    alert("注文を送信しました！");
-    toggleOrderModal();
-    Object.keys(orders).forEach(key => delete orders[key]); // 注文データをクリア
-    renderOrder(); // 表示を更新
-}
-function recordOrder(data) {
-  const sheet = getTodaySheet();
-  const prevTotal = getPreviousTotal(sheet, data.tableNumber);
-  const newTotal = prevTotal + data.subtotal;
+    document.getElementById("tableNumber").value = tableNumberFromUrl;
 
-  sheet.appendRow([
-    new Date(),
-    data.tableNumber,
-    data.orderId,
-    data.items.join(", "),
-    data.subtotal,
-    newTotal
-  ]);
-}
-
-window.addEventListener("DOMContentLoaded", () => {
-    const groupId = ensureGroupId();
-    console.log("このグループのID:", groupId);
+    try {
+        allMenuItems = await loadCSV();
+        if (allMenuItems.length === 0) {
+            document.getElementById("menuContainer").textContent = "メニューが見つかりません。";
+            return;
+        }
+        selectedCategory = allMenuItems[0]["カテゴリ"] || "";
+        renderCategories(allMenuItems);
+        renderMenuItems();
+        renderOrder();
+    } catch (error) {
+        console.error(error);
+        document.getElementById("menuContainer").textContent =
+            "メニューの読み込みに失敗しました。時間をおいて再試行してください。";
+    }
 });
 
-window.onload = async () => {
-    allMenuItems = await loadCSV();
-    if (tableNumberFromUrl) {
-        document.getElementById("tableNumber").value = tableNumberFromUrl;
-    }
-    // 最初のカテゴリだけ表示するよう修正
-    selectedCategory = allMenuItems[0]["カテゴリ"];
-    renderCategories(allMenuItems);
-    renderMenuItems();
-    renderOrder();  // ← 必ずここで呼ぶ
-};

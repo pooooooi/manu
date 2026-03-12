@@ -1,70 +1,75 @@
 <!DOCTYPE html>
 <html lang="ja">
-
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>注文ページ</title>
-  <link rel="stylesheet" href="style.css">
+  <title>注文メニュー</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
-
 <body>
   <header>
-    <span>注文ページ</span>
+    <span>注文メニュー</span>
     <div class="table-number">
-      <span>テーブル番号：</span>
+      <span>テーブル:</span>
       <input id="tableNumber" type="text" readonly />
     </div>
   </header>
+
   <div class="wrapper">
-    <!-- 左メニュー -->
     <div id="leftMenu">
       <div class="category-buttons" id="categoryButtons"></div>
     </div>
 
-    <!-- 右側：メニューと注文 -->
-    <div style="flex-grow: 1;">
+    <div id="mainPane">
       <div id="menuContainer"></div>
+
       <button id="showOrderBtn" onclick="toggleOrderModal()">
-        🛒 注文リスト <span id="orderBadge">0</span>
+        注文リスト <span id="orderBadge">0</span>
       </button>
-      <button id="showHistoryBtn" onclick="toggleHistoryModal()">
-        📄 注文履歴・清算
+      <button id="showHistoryBtn" onclick="toggleHistoryModal()">注文履歴</button>
+      <button id="retryQueueBtn" onclick="retryPendingOrders()" style="display:none;">
+        再送キュー 0
       </button>
+
       <div id="orderModal">
         <div class="modal-header">
-          <button class="close-btn" onclick="toggleOrderModal()">✕</button>
+          <button class="close-btn" onclick="toggleOrderModal()">×</button>
         </div>
         <h3>注文リスト</h3>
         <ul id="orderItems"></ul>
-        <p>合計金額: <span id="totalPrice">0</span> 円</p>
-        <button id="confirmOrderBtn" onclick="submitOrder()">注文を確定する</button>
-        <!-- <button onclick="closeOrderModal()">閉じる</button> -->
+        <p>合計: <span id="totalPrice">0</span> 円</p>
+        <button id="confirmOrderBtn" onclick="submitOrder()">注文を送信</button>
       </div>
+
       <div id="historyModal">
         <div class="modal-header">
-          <button class="close-btn" onclick="toggleHistoryModal()">✕</button>
+          <button class="close-btn" onclick="toggleHistoryModal()">×</button>
         </div>
         <h3>注文履歴</h3>
         <ul id="historyItems"></ul>
-        <p>合計金額: <span id="historyTotal">0</span> 円</p>
-        <button onclick="clearHistory()">清算する</button>
+        <p>合計: <span id="historyTotal">0</span> 円</p>
+        <button id="clearHistoryBtn" class="danger-btn" onclick="clearHistory()">履歴をクリア</button>
       </div>
     </div>
-    <!-- オプション選択用モーダル（最初は非表示） -->
+
     <div id="optionModal" class="modal">
       <div class="modal-content">
         <div class="modal-header">
-          <button class="close-btn" onclick="closeModal()">✕</button>
+          <button class="close-btn" onclick="closeModal()">×</button>
         </div>
         <h3 id="optionTitle"></h3>
+        <div id="optionImageWrap">
+          <img id="optionImage" alt="" loading="lazy" referrerpolicy="no-referrer" />
+        </div>
         <div id="optionList"></div>
-        <button class="simple-button" onclick="addOptionsToOrder()">✅オプション追加</button>
-        <button class="simple-button" onclick="addItemWithoutOptions()">オプションを追加せずに注文</button>
-        <!-- <button onclick="closeModal()">閉じる</button> -->
+        <button id="addOptionsBtn" class="simple-button" onclick="addOptionsToOrder()">オプション付きで追加</button>
+        <button id="addWithoutOptionsBtn" class="simple-button" onclick="addItemWithoutOptions()">オプションなしで追加</button>
       </div>
     </div>
-    <script src="menu.js"></script>
-</body>
+  </div>
 
+  <script src="config.js"></script>
+  <script src="menu.js"></script>
+  <div id="toastContainer" aria-live="polite" aria-atomic="true"></div>
+</body>
 </html>

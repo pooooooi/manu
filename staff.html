@@ -1,0 +1,38 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>スタッフ確認画面</title>
+  <link rel="stylesheet" href="staff.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>スタッフ確認</h1>
+    <div class="controls">
+      <input id="dateInput" type="date" />
+      <button id="refreshBtn" type="button">再読み込み</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="tabs">
+      <button id="ordersTabBtn" class="tab-btn is-active" type="button">注文確認</button>
+      <button id="checkoutTabBtn" class="tab-btn" type="button">会計確認</button>
+    </div>
+    <p id="statusText">読み込み中...</p>
+    <div id="ordersView">
+      <div id="orders"></div>
+    </div>
+    <div id="checkoutView" class="hidden">
+      <h3 class="section-title">会計待ち</h3>
+      <div id="groups"></div>
+      <h3 class="section-title">会計履歴</h3>
+      <div id="paidGroups"></div>
+    </div>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="staff.js"></script>
+</body>
+</html>
