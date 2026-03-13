@@ -28,16 +28,28 @@
     </div>
     <p id="statusText">読み込み中...</p>
     <div id="ordersView">
-      <h3 class="section-title">未確認</h3>
-      <div id="orders"></div>
-      <h3 class="section-title">処理済み履歴</h3>
-      <div id="confirmedOrders"></div>
+      <section class="section-block section-block-live">
+        <h3 id="ordersPendingTitle" class="section-title section-title-live">対応中（未確認）</h3>
+        <div id="orders"></div>
+      </section>
+      <section class="section-block section-block-history">
+        <h3 id="ordersHistoryTitle" class="section-title section-title-history">履歴（処理済み）</h3>
+        <div id="confirmedOrders"></div>
+      </section>
     </div>
     <div id="checkoutView" class="hidden">
-      <h3 class="section-title">会計待ち</h3>
-      <div id="groups"></div>
-      <h3 class="section-title">会計履歴</h3>
-      <div id="paidGroups"></div>
+      <section class="section-block section-block-live">
+        <h3 id="tableSummaryTitle" class="section-title section-title-live">テーブル合算（一括会計）</h3>
+        <div id="tableSummaries"></div>
+      </section>
+      <section class="section-block section-block-live">
+        <h3 id="checkoutPendingTitle" class="section-title section-title-live">対応中（会計待ち）</h3>
+        <div id="groups"></div>
+      </section>
+      <section class="section-block section-block-history">
+        <h3 id="checkoutHistoryTitle" class="section-title section-title-history">履歴（会計済）</h3>
+        <div id="paidGroups"></div>
+      </section>
     </div>
   </main>
 

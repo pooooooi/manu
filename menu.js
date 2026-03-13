@@ -842,8 +842,15 @@ async function waitOrderAccepted(orderId, dateText, options = {}) {
         )}&table=${encodeURIComponent(tableNumberFromUrl)}&orderId=${encodeURIComponent(
             orderId
         )}&sig=${encodeURIComponent(tableSigFromUrl)}`;
-        const data = await jsonpFetch(url);
-        if (data && data.result === "OK" && data.exists) return true;
+        try {
+            const data = await jsonpFetch(url);
+            if (data && data.result === "OK" && data.exists) return true;
+            if (data && data.result === "error" && String(data.message || "") === "unauthorized") {
+                return false;
+            }
+        } catch (_) {
+            // 一時的な通信/JSONP失敗では即失敗せず、タイムアウトまで再試行する。
+        }
         await new Promise((r) => window.setTimeout(r, pollIntervalMs));
     }
     return false;
@@ -901,28 +908,18 @@ async function submitOrder() {
     }));
 
     let activeGroupId = getGroupId();
-    if (immediateSubmitMode && skipStorePreflightInImmediateMode && skipGroupPreflightInImmediateMode) {
-        ensureCurrentGroupIsActive(tableNumber)
-            .then((nextGroupId) => {
-                if (!nextGroupId) return;
-                if (nextGroupId === activeGroupId) return;
-                sessionStorage.setItem("groupId", nextGroupId);
-            })
-            .catch(() => {});
-    } else if (immediateSubmitMode && skipGroupPreflightInImmediateMode) {
+    if (immediateSubmitMode) {
         try {
-            await ensureStoreOpenForOrder();
+            if (!skipStorePreflightInImmediateMode) {
+                await ensureStoreOpenForOrder();
+            }
+            // 会計済みの古いgroupIdへ誤送信されると、会計待ち金額が過去分と混ざる。
+            // そのため immediate mode でも group の状態確認だけは必ず実施する。
+            activeGroupId = await ensureCurrentGroupIsActive(tableNumber);
         } catch (_) {
             showToast("現在は注文を受け付けていません。", "error");
             return;
         }
-        ensureCurrentGroupIsActive(tableNumber)
-            .then((nextGroupId) => {
-                if (!nextGroupId) return;
-                if (nextGroupId === activeGroupId) return;
-                sessionStorage.setItem("groupId", nextGroupId);
-            })
-            .catch(() => {});
     } else {
         try {
             const preflight = await Promise.all([

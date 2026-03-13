@@ -30,8 +30,14 @@ const ordersView = document.getElementById("ordersView");
 const checkoutView = document.getElementById("checkoutView");
 const ordersEl = document.getElementById("orders");
 const confirmedOrdersEl = document.getElementById("confirmedOrders");
+const tableSummariesEl = document.getElementById("tableSummaries");
 const groupsEl = document.getElementById("groups");
 const paidGroupsEl = document.getElementById("paidGroups");
+const ordersPendingTitleEl = document.getElementById("ordersPendingTitle");
+const ordersHistoryTitleEl = document.getElementById("ordersHistoryTitle");
+const tableSummaryTitleEl = document.getElementById("tableSummaryTitle");
+const checkoutPendingTitleEl = document.getElementById("checkoutPendingTitle");
+const checkoutHistoryTitleEl = document.getElementById("checkoutHistoryTitle");
 
 let activeView = "orders";
 let groupLabelMap = {};
@@ -44,6 +50,13 @@ const seenUnconfirmedKeys = new Set();
 const baseTitle = document.title || "スタッフ確認画面";
 const pendingOrderActions = new Map();
 const pendingGroupActions = new Map();
+let latestActiveGroups = [];
+const historyHintCacheTtlMs = 60000;
+let historyHintCache = {
+  targetDate: "",
+  hint: "",
+  checkedAt: 0
+};
 
 function todayText() {
   const d = new Date();
@@ -51,6 +64,49 @@ function todayText() {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+function yesterdayText() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+async function getHistoryHintIfNeeded(dateText, totalCount) {
+  const date = String(dateText || "").trim();
+  if (!date || date !== todayText() || Number(totalCount || 0) > 0) {
+    return "";
+  }
+
+  const now = Date.now();
+  if (
+    historyHintCache.targetDate === date &&
+    now - Number(historyHintCache.checkedAt || 0) < historyHintCacheTtlMs
+  ) {
+    return String(historyHintCache.hint || "");
+  }
+
+  const yday = yesterdayText();
+  let hint = "";
+  try {
+    const summaryUrl = `${endpoint}?action=getGroupSummary&date=${encodeURIComponent(
+      yday
+    )}&staffToken=${encodeURIComponent(staffToken)}`;
+    const summary = await jsonpFetch(summaryUrl);
+    if (summary && summary.result === "OK" && Number(summary.count || 0) > 0) {
+      hint = ` / 昨日(${yday})に履歴があります`;
+    }
+  } catch (_) {}
+
+  historyHintCache = {
+    targetDate: date,
+    hint: hint,
+    checkedAt: now
+  };
+  return hint;
 }
 
 function setStatus(message) {
@@ -81,6 +137,30 @@ function updateCheckoutBadge(count) {
     return;
   }
   checkoutTabBadge.classList.add("hidden");
+}
+
+function updateOrdersSectionTitles(pendingCount, historyCount) {
+  if (ordersPendingTitleEl) {
+    ordersPendingTitleEl.textContent = `対応中（未確認） ${Math.max(0, Number(pendingCount) || 0)}件`;
+  }
+  if (ordersHistoryTitleEl) {
+    ordersHistoryTitleEl.textContent = `履歴（処理済み） ${Math.max(0, Number(historyCount) || 0)}件`;
+  }
+}
+
+function updateCheckoutSectionTitles(activeCount, paidCount, bulkTableCount) {
+  if (tableSummaryTitleEl) {
+    tableSummaryTitleEl.textContent = `テーブル合算（一括会計） ${Math.max(
+      0,
+      Number(bulkTableCount) || 0
+    )}テーブル`;
+  }
+  if (checkoutPendingTitleEl) {
+    checkoutPendingTitleEl.textContent = `対応中（会計待ち） ${Math.max(0, Number(activeCount) || 0)}件`;
+  }
+  if (checkoutHistoryTitleEl) {
+    checkoutHistoryTitleEl.textContent = `履歴（会計済） ${Math.max(0, Number(paidCount) || 0)}件`;
+  }
 }
 
 function flashOrdersTabAlert() {
@@ -236,6 +316,7 @@ function toStaffStatusLabel(status) {
   if (s === "未確認") return "未確認あり";
   if (s === "確認済") return "確認済";
   if (s === "会計済") return "会計済";
+  if (s === "取消済") return "取消済";
   return s || "-";
 }
 
@@ -369,16 +450,29 @@ function renderOrders(orders) {
         <section class="card">
           <p class="meta">${escapeHtml(o.timestamp)} / ${escapeHtml(groupLabel)}</p>
           <p class="meta">注文No: ${escapeHtml(displayOrderNo)} / テーブル ${escapeHtml(o.table)}</p>
-          <p class="meta">グループ計: ${Number(o.groupTotal || 0)}円</p>
+          <p class="meta">現在グループ計: ${Number(o.groupTotal || 0)}円</p>
           ${renderTechnicalMeta(o.orderId, o.groupId)}
           <p class="items">${items}</p>
           <div class="row">
             <span class="subtotal">${Number(o.subtotal || 0)}円</span>
-            <button class="confirm-btn" data-order-id="${escapeHtml(
-              o.orderId
-            )}" data-table="${escapeHtml(o.table)}" data-busy="${pending ? "1" : "0"}" ${
-              pending ? "disabled" : ""
-            }>${pending ? "反映待ち..." : "確認済みにする"}</button>
+            <div class="actions">
+              <button
+                class="cancel-btn"
+                data-action="cancel-unconfirmed"
+                data-order-id="${escapeHtml(o.orderId)}"
+                data-table="${escapeHtml(o.table)}"
+                data-busy="${pending ? "1" : "0"}"
+                ${pending ? "disabled" : ""}
+              >${pending ? "反映待ち..." : "作成前キャンセル"}</button>
+              <button
+                class="confirm-btn"
+                data-action="confirm"
+                data-order-id="${escapeHtml(o.orderId)}"
+                data-table="${escapeHtml(o.table)}"
+                data-busy="${pending ? "1" : "0"}"
+                ${pending ? "disabled" : ""}
+              >${pending ? "反映待ち..." : "確認済みにする"}</button>
+            </div>
           </div>
         </section>
       `;
@@ -434,13 +528,99 @@ function renderGroups(groups) {
           <p class="items">${escapeHtml(g.items || "").replace(/\n/g, "<br>") || "注文内容なし"}</p>
           <div class="row">
             <span class="subtotal">合計 ${Number(g.groupTotal || 0)}円</span>
+            <div class="actions">
+              <button
+                class="adjust-btn"
+                data-action="add-adjustment"
+                data-busy="${pending ? "1" : "0"}"
+                data-table="${escapeHtml(g.table)}"
+                data-group-id="${escapeHtml(g.groupId)}"
+                data-group-total="${escapeHtml(String(Number(g.groupTotal || 0)))}"
+                ${pending ? "disabled" : ""}
+              >${pending ? "反映待ち..." : "会計調整"}</button>
+              <button
+                class="pay-btn"
+                data-busy="${pending ? "1" : "0"}"
+                data-table="${escapeHtml(g.table)}"
+                data-group-id="${escapeHtml(g.groupId)}"
+                ${pending ? "disabled" : ""}
+              >${pending ? "反映待ち..." : "会計済みにする"}</button>
+            </div>
+          </div>
+        </section>
+      `;
+    })
+    .join("");
+}
+
+function buildTableSummaries(groups) {
+  const map = {};
+  const list = Array.isArray(groups) ? groups : [];
+  for (let i = 0; i < list.length; i++) {
+    const g = list[i] || {};
+    const table = String(g.table || "").trim();
+    const groupId = String(g.groupId || "").trim();
+    if (!table || !groupId) continue;
+    if (!map[table]) {
+      map[table] = {
+        table,
+        groupCount: 0,
+        orderCount: 0,
+        total: 0,
+        unconfirmedGroups: 0,
+        lastOrderAt: ""
+      };
+    }
+    map[table].groupCount += 1;
+    map[table].orderCount += Number(g.orderCount || 0);
+    map[table].total += Number(g.groupTotal || 0);
+    if (String(g.status || "") === "未確認") {
+      map[table].unconfirmedGroups += 1;
+    }
+    const last = String(g.lastOrderAt || "");
+    if (last && (!map[table].lastOrderAt || map[table].lastOrderAt < last)) {
+      map[table].lastOrderAt = last;
+    }
+  }
+  return Object.keys(map)
+    .map((k) => map[k])
+    .sort((a, b) => (a.table > b.table ? 1 : -1));
+}
+
+function renderTableSummaries(groups) {
+  if (!tableSummariesEl) return;
+  const tables = buildTableSummaries(groups).filter((t) => Number(t.groupCount || 0) >= 2);
+  if (!tables || tables.length === 0) {
+    tableSummariesEl.innerHTML =
+      '<div class="empty">一括会計対象（2グループ以上のテーブル）はありません。</div>';
+    return;
+  }
+
+  tableSummariesEl.innerHTML = tables
+    .map((t) => {
+      const hasPending = latestActiveGroups.some((g) => {
+        if (String(g.table || "") !== t.table) return false;
+        return !!getPendingGroupAction(g.table, g.groupId);
+      });
+      const caution =
+        t.unconfirmedGroups > 0 ? ` / 未確認グループ ${Number(t.unconfirmedGroups)}件` : "";
+      return `
+        <section class="card">
+          <p class="meta">テーブル ${escapeHtml(t.table)} 合算</p>
+          <p class="meta">グループ数: ${Number(t.groupCount)} / 注文数: ${Number(t.orderCount)}${caution}</p>
+          <p class="meta">最終注文: ${escapeHtml(t.lastOrderAt || "-")}</p>
+          <div class="row">
+            <span class="subtotal">合計 ${Number(t.total)}円</span>
             <button
-              class="pay-btn"
-              data-busy="${pending ? "1" : "0"}"
-              data-table="${escapeHtml(g.table)}"
-              data-group-id="${escapeHtml(g.groupId)}"
-              ${pending ? "disabled" : ""}
-            >${pending ? "反映待ち..." : "会計済みにする"}</button>
+              class="table-pay-btn"
+              data-action="pay-table"
+              data-table="${escapeHtml(t.table)}"
+              data-total="${escapeHtml(String(Number(t.total)))}"
+              data-group-count="${escapeHtml(String(Number(t.groupCount)))}"
+              data-unconfirmed-groups="${escapeHtml(String(Number(t.unconfirmedGroups)))}"
+              data-busy="${hasPending ? "1" : "0"}"
+              ${hasPending ? "disabled" : ""}
+            >${hasPending ? "反映待ち..." : "テーブル一括会計"}</button>
           </div>
         </section>
       `;
@@ -511,14 +691,18 @@ async function loadOrders() {
     const paidUrl = `${endpoint}?action=getOrders&status=${encodeURIComponent(
       "会計済"
     )}&date=${encodeURIComponent(date)}&staffToken=${encodeURIComponent(staffToken)}`;
+    const cancelledUrl = `${endpoint}?action=getOrders&status=${encodeURIComponent(
+      "取消済"
+    )}&date=${encodeURIComponent(date)}&staffToken=${encodeURIComponent(staffToken)}`;
     const summaryUrl = `${endpoint}?action=getGroupSummary&date=${encodeURIComponent(
       date
     )}&staffToken=${encodeURIComponent(staffToken)}`;
 
-    const [unconfirmedData, confirmedData, paidData, summary] = await Promise.all([
+    const [unconfirmedData, confirmedData, paidData, cancelledData, summary] = await Promise.all([
       jsonpFetch(unconfirmedUrl),
       jsonpFetch(confirmedUrl),
       jsonpFetch(paidUrl),
+      jsonpFetch(cancelledUrl),
       jsonpFetch(summaryUrl).catch(() => null)
     ]);
     if (!unconfirmedData || unconfirmedData.result !== "OK") {
@@ -533,6 +717,10 @@ async function loadOrders() {
       setStatus(`取得失敗: ${(paidData && paidData.message) || "unknown error"}`);
       return;
     }
+    if (!cancelledData || cancelledData.result !== "OK") {
+      setStatus(`取得失敗: ${(cancelledData && cancelledData.message) || "unknown error"}`);
+      return;
+    }
 
     if (summary && summary.result === "OK") {
       const summaryGroups = summary.groups || [];
@@ -544,18 +732,27 @@ async function loadOrders() {
     const unconfirmedOrders = unconfirmedData.orders || [];
     const confirmedOrders = confirmedData.orders || [];
     const paidOrders = paidData.orders || [];
+    const cancelledOrders = cancelledData.orders || [];
     updateUnconfirmedBadge(unconfirmedOrders.length);
     detectAndAlertNewUnconfirmed(unconfirmedOrders, date);
     const processedOrders = confirmedOrders
       .concat(paidOrders)
+      .concat(cancelledOrders)
       .sort((a, b) => (String(a.timestamp || "") < String(b.timestamp || "") ? 1 : -1));
+    updateOrdersSectionTitles(unconfirmedOrders.length, processedOrders.length);
     reconcilePendingOrderActions(unconfirmedOrders, processedOrders);
     renderOrders(unconfirmedOrders);
     renderConfirmedOrders(processedOrders);
+    const historyHint = await getHistoryHintIfNeeded(
+      date,
+      unconfirmedOrders.length + processedOrders.length
+    );
     setStatus(
       `注文確認: 未確認 ${Number(unconfirmedData.count || 0)}件 / 処理済み ${Number(
         processedOrders.length
-      )}件 (確認済 ${Number(confirmedData.count || 0)} / 会計済 ${Number(paidData.count || 0)}) / ${date}`
+      )}件 (確認済 ${Number(confirmedData.count || 0)} / 会計済 ${Number(paidData.count || 0)} / 取消済 ${Number(
+        cancelledData.count || 0
+      )}) / ${date}${historyHint}`
     );
   } catch (error) {
     console.error(error);
@@ -597,7 +794,10 @@ async function loadGroups() {
 
     const activeGroups = activeData.groups || [];
     const paidGroups = paidData.groups || [];
+    const bulkTables = buildTableSummaries(activeGroups).filter((t) => Number(t.groupCount || 0) >= 2);
+    latestActiveGroups = activeGroups.slice();
     updateCheckoutBadge(Number(activeData.count || activeGroups.length || 0));
+    updateCheckoutSectionTitles(activeGroups.length, paidGroups.length, bulkTables.length);
     if (unconfirmedData && unconfirmedData.result === "OK") {
       const unconfirmedOrders = unconfirmedData.orders || [];
       updateUnconfirmedBadge(unconfirmedOrders.length);
@@ -605,12 +805,17 @@ async function loadGroups() {
     }
     groupLabelMap = buildGroupLabelMapFromGroups(activeGroups.concat(paidGroups));
     reconcilePendingGroupActions(activeGroups, paidGroups);
+    renderTableSummaries(activeGroups);
     renderGroups(activeGroups);
     renderPaidGroups(paidGroups);
+    const historyHint = await getHistoryHintIfNeeded(
+      date,
+      Number(activeData.count || activeGroups.length || 0) + Number(paidData.count || paidGroups.length || 0)
+    );
     setStatus(
       `会計確認: 会計待ち ${Number(activeData.count || 0)}件 / 履歴 ${Number(
         paidData.count || 0
-      )}件 / ${date}`
+      )}件 / ${date}${historyHint}`
     );
   } catch (error) {
     console.error(error);
@@ -636,6 +841,86 @@ function switchView(view) {
   checkoutTabBtn.classList.toggle("is-active", showCheckout);
 
   loadActiveView();
+}
+
+async function postGroupPaid_(table, groupId, date) {
+  const body = new URLSearchParams({
+    action: "markGroupPaid",
+    table: table,
+    groupId: groupId,
+    date: date,
+    staffToken: staffToken
+  });
+  await fetch(endpoint, {
+    method: "POST",
+    mode: "no-cors",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString()
+  });
+}
+
+async function markTablePaid(table, btn) {
+  const tableText = String(table || "").trim();
+  if (!tableText) return;
+  if (!btn || btn.dataset.busy === "1") return;
+
+  const targets = latestActiveGroups.filter((g) => String(g.table || "").trim() === tableText);
+  if (targets.length < 2) {
+    setStatus("テーブル一括会計は、同一テーブルに2グループ以上ある場合のみ利用できます。");
+    return;
+  }
+
+  const total = targets.reduce((sum, g) => sum + (Number(g.groupTotal) || 0), 0);
+  const unconfirmedGroups = targets.filter((g) => String(g.status || "") === "未確認").length;
+  const warning = unconfirmedGroups > 0 ? `\n※未確認グループ ${unconfirmedGroups}件を含みます。` : "";
+  if (
+    !confirm(
+      `テーブル ${tableText} を一括会計します。\n対象 ${targets.length}グループ / 合計 ${total}円${warning}`
+    )
+  ) {
+    return;
+  }
+
+  const originalText = btn.textContent;
+  btn.dataset.busy = "1";
+  btn.disabled = true;
+  btn.textContent = "会計処理中...";
+
+  const date = dateInput.value || todayText();
+  const failed = [];
+  try {
+    for (let i = 0; i < targets.length; i++) {
+      const g = targets[i];
+      setPendingGroupAction(g.table, g.groupId, ["会計済"]);
+      setStatus(`テーブル ${tableText} 一括会計 ${i + 1}/${targets.length} を処理中...`);
+      try {
+        await postGroupPaid_(g.table, g.groupId, date);
+        const ok = await waitForGroupStatus(g.table, g.groupId, "会計済");
+        if (ok) {
+          clearPendingGroupAction(g.table, g.groupId);
+        } else {
+          clearPendingGroupAction(g.table, g.groupId);
+          failed.push(g.groupId);
+        }
+      } catch (_) {
+        clearPendingGroupAction(g.table, g.groupId);
+        failed.push(g.groupId);
+      }
+    }
+
+    if (failed.length === 0) {
+      setStatus(`テーブル ${tableText} の一括会計を反映しました。`);
+    } else {
+      setStatus(
+        `テーブル ${tableText} は一部未反映です。失敗 ${failed.length}件（グループ: ${failed.join(", ")}）`
+      );
+    }
+  } finally {
+    btn.dataset.busy = "0";
+    btn.disabled = false;
+    btn.textContent = originalText;
+    loadGroups();
+  }
 }
 
 async function markConfirmed(orderId, table, btn) {
@@ -693,7 +978,68 @@ async function markConfirmed(orderId, table, btn) {
   }
 }
 
+async function cancelUnconfirmedOrder(orderId, table, btn) {
+  if (!orderId || !table) return;
+  if (!btn || btn.dataset.busy === "1") return;
+  if (!confirm("この未確認注文を作成前キャンセルします。会計には補正が入り、履歴は残ります。よろしいですか？")) {
+    return;
+  }
+
+  const originalText = btn.textContent;
+  btn.dataset.busy = "1";
+  btn.disabled = true;
+  btn.textContent = "取消中...";
+
+  const body = new URLSearchParams({
+    action: "cancelUnconfirmedOrder",
+    orderId: orderId,
+    date: dateInput.value || todayText(),
+    staffToken: staffToken
+  });
+
+  try {
+    const sendPromise = fetch(endpoint, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString()
+    });
+    setPendingOrderAction(orderId, table, ["取消済"]);
+    btn.textContent = "反映待ち...";
+    setStatus("作成前キャンセルを送信しました。");
+    window.setTimeout(loadActiveView, 300);
+    sendPromise
+      .then(() => waitForOrderStatus(orderId, table, "取消済"))
+      .then((ok) => {
+        if (!ok) {
+          setStatus("作成前キャンセルの反映に時間がかかっています。");
+          return;
+        }
+        clearPendingOrderAction(orderId, table);
+        setStatus("作成前キャンセルを反映しました。");
+        loadActiveView();
+      })
+      .catch(() => {
+        clearPendingOrderAction(orderId, table);
+        btn.dataset.busy = "0";
+        btn.disabled = false;
+        btn.textContent = originalText;
+        setStatus("作成前キャンセルの検証に失敗しました。");
+      });
+  } catch (error) {
+    console.error(error);
+    clearPendingOrderAction(orderId, table);
+    btn.dataset.busy = "0";
+    btn.disabled = false;
+    btn.textContent = originalText;
+    setStatus("作成前キャンセルに失敗しました。");
+  }
+}
+
 async function waitForOrderStatus(orderId, table, expectedStatus, timeoutMs = verifyTimeoutMs) {
+  const expectedList = (Array.isArray(expectedStatus) ? expectedStatus : [expectedStatus])
+    .map((s) => String(s || "").trim())
+    .filter(Boolean);
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const date = dateInput.value || todayText();
@@ -702,9 +1048,14 @@ async function waitForOrderStatus(orderId, table, expectedStatus, timeoutMs = ve
     )}&table=${encodeURIComponent(table)}&orderId=${encodeURIComponent(
       orderId
     )}&token=${encodeURIComponent(staffToken)}`;
-    const data = await jsonpFetch(url);
-    if (data && data.result === "OK" && data.exists && data.status === expectedStatus) {
-      return true;
+    try {
+      const data = await jsonpFetch(url);
+      if (data && data.result === "OK" && data.exists) {
+        const currentStatus = String(data.status || "").trim();
+        if (expectedList.indexOf(currentStatus) >= 0) return true;
+      }
+    } catch (_) {
+      // 一時的な検証失敗は再試行。
     }
     await new Promise((r) => window.setTimeout(r, verifyPollIntervalMs));
   }
@@ -723,9 +1074,37 @@ async function waitForGroupStatus(table, groupId, expectedStatus, timeoutMs = ve
     )}&table=${encodeURIComponent(table)}&groupId=${encodeURIComponent(
       groupId
     )}&staffToken=${encodeURIComponent(staffToken)}`;
-    const data = await jsonpFetch(url);
-    if (data && data.result === "OK" && expectedList.indexOf(String(data.status || "").trim()) >= 0) {
-      return true;
+    try {
+      const data = await jsonpFetch(url);
+      if (data && data.result === "OK" && expectedList.indexOf(String(data.status || "").trim()) >= 0) {
+        return true;
+      }
+    } catch (_) {
+      // 一時的な検証失敗は再試行。
+    }
+    await new Promise((r) => window.setTimeout(r, verifyPollIntervalMs));
+  }
+  return false;
+}
+
+async function waitForGroupTotalChanged(table, groupId, beforeTotal, timeoutMs = verifyTimeoutMs) {
+  const start = Date.now();
+  const before = Number(beforeTotal) || 0;
+  while (Date.now() - start < timeoutMs) {
+    const date = dateInput.value || todayText();
+    const url = `${endpoint}?action=getGroupSummary&date=${encodeURIComponent(
+      date
+    )}&staffToken=${encodeURIComponent(staffToken)}`;
+    try {
+      const data = await jsonpFetch(url);
+      if (data && data.result === "OK" && Array.isArray(data.groups)) {
+        const target = data.groups.find(
+          (g) => String(g.table || "") === String(table || "") && String(g.groupId || "") === String(groupId || "")
+        );
+        if (target && Number(target.groupTotal || 0) !== before) return true;
+      }
+    } catch (_) {
+      // 一時的な検証失敗は再試行。
     }
     await new Promise((r) => window.setTimeout(r, verifyPollIntervalMs));
   }
@@ -787,6 +1166,83 @@ async function markGroupPaid(table, groupId, btn) {
   }
 }
 
+async function addGroupAdjustment(table, groupId, currentTotal, btn) {
+  if (!table || !groupId) return;
+  if (!btn || btn.dataset.busy === "1") return;
+
+  const amountInput = window.prompt("会計調整額(円)を入力してください。例: -500 / 300");
+  if (amountInput === null) return;
+  const amount = Number.parseInt(String(amountInput || "").trim(), 10);
+  if (!Number.isFinite(amount) || amount === 0) {
+    setStatus("会計調整額が不正です。");
+    return;
+  }
+  if (Math.abs(amount) > 100000) {
+    setStatus("会計調整額が大きすぎます。");
+    return;
+  }
+
+  const reasonInput = window.prompt("会計調整の理由を入力してください。");
+  if (reasonInput === null) return;
+  const reason = String(reasonInput || "").trim();
+  if (!reason) {
+    setStatus("会計調整の理由が必要です。");
+    return;
+  }
+  if (!confirm(`会計調整を実行します。\n金額: ${amount}円\n理由: ${reason}`)) {
+    return;
+  }
+
+  const originalText = btn.textContent;
+  btn.dataset.busy = "1";
+  btn.disabled = true;
+  btn.textContent = "調整中...";
+
+  const body = new URLSearchParams({
+    action: "addGroupAdjustment",
+    table: table,
+    groupId: groupId,
+    amount: String(amount),
+    reason: reason,
+    date: dateInput.value || todayText(),
+    staffToken: staffToken
+  });
+
+  try {
+    const sendPromise = fetch(endpoint, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString()
+    });
+    btn.textContent = "反映待ち...";
+    setStatus("会計調整を送信しました。");
+    window.setTimeout(loadGroups, 300);
+    sendPromise
+      .then(() => waitForGroupTotalChanged(table, groupId, currentTotal))
+      .then((ok) => {
+        if (!ok) {
+          setStatus("会計調整の反映に時間がかかっています。");
+          return;
+        }
+        setStatus("会計調整を反映しました。");
+        loadGroups();
+      })
+      .catch(() => {
+        btn.dataset.busy = "0";
+        btn.disabled = false;
+        btn.textContent = originalText;
+        setStatus("会計調整の検証に失敗しました。");
+      });
+  } catch (error) {
+    console.error(error);
+    btn.dataset.busy = "0";
+    btn.disabled = false;
+    btn.textContent = originalText;
+    setStatus("会計調整に失敗しました。");
+  }
+}
+
 async function undoGroupPaid(table, groupId, btn) {
   if (!table || !groupId) return;
   if (!btn || btn.dataset.busy === "1") return;
@@ -843,14 +1299,24 @@ async function undoGroupPaid(table, groupId, btn) {
 }
 
 ordersEl.addEventListener("click", (ev) => {
-  const btn = ev.target.closest(".confirm-btn");
+  const btn = ev.target.closest("button");
   if (!btn) return;
+  const action = String(btn.dataset.action || "confirm");
+  if (action === "cancel-unconfirmed") {
+    cancelUnconfirmedOrder(btn.dataset.orderId || "", btn.dataset.table || "", btn);
+    return;
+  }
   markConfirmed(btn.dataset.orderId || "", btn.dataset.table || "", btn);
 });
 
 groupsEl.addEventListener("click", (ev) => {
-  const btn = ev.target.closest(".pay-btn");
+  const btn = ev.target.closest("button");
   if (!btn) return;
+  if (String(btn.dataset.action || "") === "add-adjustment") {
+    const currentTotal = Number(btn.dataset.groupTotal || 0) || 0;
+    addGroupAdjustment(btn.dataset.table || "", btn.dataset.groupId || "", currentTotal, btn);
+    return;
+  }
   markGroupPaid(btn.dataset.table || "", btn.dataset.groupId || "", btn);
 });
 
@@ -860,6 +1326,15 @@ paidGroupsEl.addEventListener("click", (ev) => {
   if ((btn.dataset.action || "") !== "undo-paid") return;
   undoGroupPaid(btn.dataset.table || "", btn.dataset.groupId || "", btn);
 });
+
+if (tableSummariesEl) {
+  tableSummariesEl.addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".table-pay-btn");
+    if (!btn) return;
+    if ((btn.dataset.action || "") !== "pay-table") return;
+    markTablePaid(btn.dataset.table || "", btn);
+  });
+}
 
 ordersTabBtn.addEventListener("click", () => switchView("orders"));
 checkoutTabBtn.addEventListener("click", () => switchView("checkout"));
