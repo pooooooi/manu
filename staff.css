@@ -69,6 +69,7 @@ main {
 }
 
 #orders,
+#confirmedOrders,
 #groups,
 #paidGroups {
   display: grid;
@@ -89,6 +90,7 @@ main {
 }
 
 .tab-btn {
+  position: relative;
   border: 1px solid #cfd6e2;
   background: #fff;
   color: var(--ink);
@@ -103,6 +105,33 @@ main {
   border-color: #1c2546;
   background: #1c2546;
   color: #fff;
+}
+
+.tab-badge {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 20px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.tab-btn.has-alert {
+  animation: tabPulse 0.7s ease-in-out 2;
+}
+
+@keyframes tabPulse {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.06); }
+  100% { transform: scale(1); }
 }
 
 .card {

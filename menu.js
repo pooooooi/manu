@@ -11,6 +11,26 @@ const allowedTableSet = new Set(
         .filter(Boolean)
 );
 const startupRetryBatchSize = Math.max(1, Number.parseInt(String(appConfig.startupRetryBatchSize || "3"), 10) || 3);
+const resendQueueEnabled = String(appConfig.resendQueueEnabled || "0").trim() === "1";
+const jsonpTimeoutMs = Math.max(1500, Number.parseInt(String(appConfig.jsonpTimeoutMs || "5000"), 10) || 5000);
+const orderAckTimeoutMs = Math.max(2000, Number.parseInt(String(appConfig.orderAckTimeoutMs || "8000"), 10) || 8000);
+const orderAckPollIntervalMs = Math.max(
+    150,
+    Number.parseInt(String(appConfig.orderAckPollIntervalMs || "350"), 10) || 350
+);
+const quickOrderAckTimeoutMs = Math.max(
+    800,
+    Number.parseInt(String(appConfig.quickOrderAckTimeoutMs || "2500"), 10) || 2500
+);
+const quickOrderAckPollIntervalMs = Math.max(
+    120,
+    Number.parseInt(String(appConfig.quickOrderAckPollIntervalMs || "250"), 10) || 250
+);
+const immediateSubmitMode = String(appConfig.immediateSubmitMode || "1").trim() !== "0";
+const skipStorePreflightInImmediateMode =
+    String(appConfig.skipStorePreflightInImmediateMode || "1").trim() !== "0";
+const skipGroupPreflightInImmediateMode =
+    String(appConfig.skipGroupPreflightInImmediateMode || "1").trim() !== "0";
 
 let allMenuItems = [];
 let selectedCategory = "";
@@ -86,6 +106,26 @@ function migrateLegacyQueueIfNeeded() {
         localStorage.setItem(currentKey, JSON.stringify(moveToCurrent));
     }
     localStorage.setItem(legacySendQueueKey, JSON.stringify(keepLegacy));
+}
+
+function purgeSendQueueIfDisabled() {
+    if (resendQueueEnabled) return;
+    try {
+        localStorage.removeItem(getSendQueueKey());
+    } catch (_) {}
+    try {
+        const legacy = readJsonStorage(localStorage, legacySendQueueKey, []);
+        if (!Array.isArray(legacy) || legacy.length === 0) {
+            localStorage.removeItem(legacySendQueueKey);
+            return;
+        }
+        const keepLegacy = legacy.filter((item) => String(item && item.table || "") !== tableNumberFromUrl);
+        if (keepLegacy.length === 0) {
+            localStorage.removeItem(legacySendQueueKey);
+            return;
+        }
+        localStorage.setItem(legacySendQueueKey, JSON.stringify(keepLegacy));
+    } catch (_) {}
 }
 
 function toNumber(value) {
@@ -177,17 +217,20 @@ function normalizeOrderEntry(name, entry) {
 }
 
 function loadSendQueue() {
+    if (!resendQueueEnabled) return [];
     const queue = readJsonStorage(localStorage, getSendQueueKey(), []);
     return Array.isArray(queue) ? queue : [];
 }
 
 function saveSendQueue(queue) {
+    if (!resendQueueEnabled) return;
     localStorage.setItem(getSendQueueKey(), JSON.stringify(queue));
     renderQueueBadge();
 }
 
 function enqueueOrder(payload) {
     const queue = loadSendQueue();
+    if (queue.some((q) => q && q.orderId === payload.orderId)) return;
     queue.push(payload);
     saveSendQueue(queue);
 }
@@ -200,6 +243,10 @@ function dequeueOrderById(orderId) {
 function renderQueueBadge() {
     const btn = document.getElementById("retryQueueBtn");
     if (!btn) return;
+    if (!resendQueueEnabled) {
+        btn.style.display = "none";
+        return;
+    }
     const count = loadSendQueue().length;
     btn.textContent = `再送キュー ${count}`;
     btn.style.display = count > 0 ? "inline-block" : "none";
@@ -256,6 +303,7 @@ async function flushSendQueue(options = {}) {
 }
 
 async function retryPendingOrders() {
+    if (!resendQueueEnabled) return;
     const { sent, remaining } = await flushSendQueue({ maxToSend: 50 });
     if (sent > 0 && remaining === 0) {
         showToast("未送信の注文をすべて再送しました。", "success");
@@ -269,6 +317,7 @@ async function retryPendingOrders() {
 }
 
 async function flushSendQueueInBackground() {
+    if (!resendQueueEnabled) return;
     try {
         const result = await flushSendQueue({ maxToSend: startupRetryBatchSize });
         if (result.sent > 0) {
@@ -350,7 +399,7 @@ function jsonpFetch(url) {
         const timeout = window.setTimeout(() => {
             cleanup();
             reject(new Error("timeout"));
-        }, 12000);
+        }, jsonpTimeoutMs);
 
         function cleanup() {
             window.clearTimeout(timeout);
@@ -777,9 +826,17 @@ async function ensureCurrentGroupIsActive(tableNumber) {
     return current;
 }
 
-async function waitOrderAccepted(orderId, dateText) {
+async function waitOrderAccepted(orderId, dateText, options = {}) {
+    const timeoutMs = Math.max(
+        500,
+        Number.parseInt(String(options.timeoutMs || orderAckTimeoutMs), 10) || orderAckTimeoutMs
+    );
+    const pollIntervalMs = Math.max(
+        120,
+        Number.parseInt(String(options.pollIntervalMs || orderAckPollIntervalMs), 10) || orderAckPollIntervalMs
+    );
     const started = Date.now();
-    while (Date.now() - started < 12000) {
+    while (Date.now() - started < timeoutMs) {
         const url = `${endpoint}?action=checkOrder&date=${encodeURIComponent(
             dateText
         )}&table=${encodeURIComponent(tableNumberFromUrl)}&orderId=${encodeURIComponent(
@@ -787,25 +844,45 @@ async function waitOrderAccepted(orderId, dateText) {
         )}&sig=${encodeURIComponent(tableSigFromUrl)}`;
         const data = await jsonpFetch(url);
         if (data && data.result === "OK" && data.exists) return true;
-        await new Promise((r) => window.setTimeout(r, 700));
+        await new Promise((r) => window.setTimeout(r, pollIntervalMs));
     }
     return false;
 }
 
+async function verifyOrderAcceptedInBackground(payload) {
+    try {
+        const accepted = await waitOrderAccepted(payload.orderId, payload.date, {
+            timeoutMs: orderAckTimeoutMs,
+            pollIntervalMs: orderAckPollIntervalMs
+        });
+        if (accepted) {
+            if (resendQueueEnabled) {
+                dequeueOrderById(payload.orderId);
+            }
+            return;
+        }
+    } catch (_) {
+        // ignore; fallback to queue flush
+    }
+    if (resendQueueEnabled) {
+        await flushSendQueueInBackground();
+        return;
+    }
+    showToast("注文送信の確認ができませんでした。注文履歴を確認してください。", "error");
+}
+
 async function submitOrder() {
     if (isSubmitting) return;
+    if (!navigator.onLine) {
+        showToast("オフラインのため送信できません。通信を確認してください。", "error");
+        return;
+    }
     const tableNumber = document.getElementById("tableNumber").value;
     if (!tableNumber) {
         showToast("テーブル番号が見つかりません。", "error");
         return;
     }
     if (!confirm("注文を送信します。よろしいですか？")) return;
-    try {
-        await ensureStoreOpenForOrder();
-    } catch (_) {
-        showToast("現在は注文を受け付けていません。", "error");
-        return;
-    }
 
     loadOrdersFromStorage();
     const items = Object.entries(orders)
@@ -823,8 +900,43 @@ async function submitOrder() {
         quantity: Math.max(1, toNumber(entry.count))
     }));
 
+    let activeGroupId = getGroupId();
+    if (immediateSubmitMode && skipStorePreflightInImmediateMode && skipGroupPreflightInImmediateMode) {
+        ensureCurrentGroupIsActive(tableNumber)
+            .then((nextGroupId) => {
+                if (!nextGroupId) return;
+                if (nextGroupId === activeGroupId) return;
+                sessionStorage.setItem("groupId", nextGroupId);
+            })
+            .catch(() => {});
+    } else if (immediateSubmitMode && skipGroupPreflightInImmediateMode) {
+        try {
+            await ensureStoreOpenForOrder();
+        } catch (_) {
+            showToast("現在は注文を受け付けていません。", "error");
+            return;
+        }
+        ensureCurrentGroupIsActive(tableNumber)
+            .then((nextGroupId) => {
+                if (!nextGroupId) return;
+                if (nextGroupId === activeGroupId) return;
+                sessionStorage.setItem("groupId", nextGroupId);
+            })
+            .catch(() => {});
+    } else {
+        try {
+            const preflight = await Promise.all([
+                ensureStoreOpenForOrder(),
+                ensureCurrentGroupIsActive(tableNumber)
+            ]);
+            activeGroupId = preflight[1];
+        } catch (_) {
+            showToast("現在は注文を受け付けていません。", "error");
+            return;
+        }
+    }
+
     const dateText = currentDateText();
-    const activeGroupId = await ensureCurrentGroupIsActive(tableNumber);
     const payload = {
         orderId: `o-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
         date: dateText,
@@ -838,6 +950,7 @@ async function submitOrder() {
 
     const confirmBtn = document.getElementById("confirmOrderBtn");
     const originalLabel = confirmBtn ? confirmBtn.textContent : "";
+    const useImmediateMode = immediateSubmitMode;
     let sentSuccessfully = false;
 
     try {
@@ -846,24 +959,42 @@ async function submitOrder() {
             confirmBtn.disabled = true;
             confirmBtn.textContent = "送信中...";
         }
-        await sendOrderPayload(payload);
-        const accepted = await waitOrderAccepted(payload.orderId, dateText);
-        if (!accepted) {
-            throw new Error("order not accepted yet");
+        if (resendQueueEnabled) {
+            // 先にキューへ退避してから送ることで、送信途中失敗でも注文を失わない。
+            enqueueOrder(payload);
+        }
+        if (useImmediateMode) {
+            // 非同期送信: UIは即時反映し、検証はバックグラウンドで実施。
+            sendOrderPayload(payload)
+                .then(() => verifyOrderAcceptedInBackground(payload))
+                .catch(() => {
+                    if (resendQueueEnabled) {
+                        flushSendQueueInBackground();
+                        return;
+                    }
+                    showToast("送信に失敗しました。通信を確認して再送してください。", "error");
+                });
+        } else {
+            await sendOrderPayload(payload);
+            const accepted = await waitOrderAccepted(payload.orderId, dateText, {
+                timeoutMs: quickOrderAckTimeoutMs,
+                pollIntervalMs: quickOrderAckPollIntervalMs
+            });
+            if (accepted) {
+                if (resendQueueEnabled) dequeueOrderById(payload.orderId);
+            } else {
+                throw new Error("order not accepted yet");
+            }
         }
         sentSuccessfully = true;
     } catch (error) {
         console.error(error);
         if (String(error && error.message || "").indexOf("store closed") >= 0) {
             showToast("現在は注文を受け付けていません。", "error");
+        } else if (!resendQueueEnabled) {
+            showToast("送信確認ができませんでした。通信を確認して再送してください。", "error");
         } else {
-            try {
-                enqueueOrder(payload);
-                showToast("送信に失敗したため、再送キューに保存しました。", "error");
-            } catch (queueError) {
-                console.error(queueError);
-                showToast("送信と再送保存に失敗しました。通信状況を確認してください。", "error");
-            }
+            showToast("送信に失敗したため、再送キューに保存しました。", "error");
         }
         return;
     } finally {
@@ -886,6 +1017,10 @@ async function submitOrder() {
     Object.keys(orders).forEach((key) => delete orders[key]);
     renderOrder();
     toggleOrderModal();
+    if (useImmediateMode) {
+        showToast("注文を受け付けました。", "success");
+        return;
+    }
     showToast("注文を送信しました。", "success");
 }
 
@@ -900,16 +1035,21 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
 
     ensureGroupId();
-    migrateLegacyQueueIfNeeded();
-    renderQueueBadge();
-    if (navigator.onLine) {
-        window.setTimeout(() => {
-            flushSendQueueInBackground();
-        }, 0);
+    purgeSendQueueIfDisabled();
+    if (resendQueueEnabled) {
+        migrateLegacyQueueIfNeeded();
     }
-    window.addEventListener("online", () => {
-        flushSendQueueInBackground();
-    });
+    renderQueueBadge();
+    if (resendQueueEnabled) {
+        if (navigator.onLine) {
+            window.setTimeout(() => {
+                flushSendQueueInBackground();
+            }, 0);
+        }
+        window.addEventListener("online", () => {
+            flushSendQueueInBackground();
+        });
+    }
 
     document.getElementById("tableNumber").value = tableNumberFromUrl;
 
