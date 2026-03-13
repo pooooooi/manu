@@ -623,13 +623,13 @@ function toggleOrderModal() {
     modal.style.display = modal.style.display === "block" ? "none" : "block";
 }
 
-function toggleHistoryModal() {
+async function toggleHistoryModal() {
     const modal = document.getElementById("historyModal");
     if (modal.style.display === "block") {
         modal.style.display = "none";
         return;
     }
-    loadHistoryFromStorage();
+    await removeCanceledHistoryEntries();
     renderHistory();
     modal.style.display = "block";
 }
@@ -826,6 +826,87 @@ async function ensureCurrentGroupIsActive(tableNumber) {
     return current;
 }
 
+async function fetchOrderStatusForHistory(orderId, dateText, tableNumber) {
+    const date = String(dateText || "").trim();
+    const table = String(tableNumber || "").trim() || tableNumberFromUrl;
+    const id = String(orderId || "").trim();
+    if (!date || !table || !id) return null;
+
+    const url = `${endpoint}?action=checkOrder&date=${encodeURIComponent(
+        date
+    )}&table=${encodeURIComponent(table)}&orderId=${encodeURIComponent(
+        id
+    )}&sig=${encodeURIComponent(tableSigFromUrl)}`;
+    const data = await jsonpFetch(url);
+    if (!data || data.result !== "OK" || !data.exists) return null;
+    return String(data.status || "").trim();
+}
+
+function makeHistoryStatusKey_(dateText, orderId) {
+    if (
+        typeof window !== "undefined" &&
+        window.ManuSharedLogic &&
+        typeof window.ManuSharedLogic.makeHistoryStatusKey === "function"
+    ) {
+        return window.ManuSharedLogic.makeHistoryStatusKey(dateText, orderId);
+    }
+    return `${String(dateText || "").trim()}::${String(orderId || "").trim()}`;
+}
+
+function filterOutCanceledHistoryEntries_(entries, statusByKey) {
+    if (
+        typeof window !== "undefined" &&
+        window.ManuSharedLogic &&
+        typeof window.ManuSharedLogic.filterOutCanceledHistoryEntries === "function"
+    ) {
+        return window.ManuSharedLogic.filterOutCanceledHistoryEntries(entries, statusByKey);
+    }
+
+    const list = Array.isArray(entries) ? entries : [];
+    const map = statusByKey && typeof statusByKey === "object" ? statusByKey : {};
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+        const entry = list[i] || {};
+        const orderId = String(entry.orderId || "").trim();
+        const date = String(entry.date || "").trim();
+        if (!orderId || !date) {
+            out.push(entry);
+            continue;
+        }
+        const key = makeHistoryStatusKey_(date, orderId);
+        if (String(map[key] || "").trim() === "取消済") continue;
+        out.push(entry);
+    }
+    return out;
+}
+
+async function removeCanceledHistoryEntries() {
+    loadHistoryFromStorage();
+    if (orderHistory.length === 0) return;
+
+    const statusByKey = {};
+    for (let i = 0; i < orderHistory.length; i++) {
+        const entry = orderHistory[i] || {};
+        const orderId = String(entry.orderId || "").trim();
+        const dateText = String(entry.date || "").trim();
+        if (!orderId || !dateText) continue;
+
+        try {
+            const status = await fetchOrderStatusForHistory(orderId, dateText, entry.table);
+            if (!status) continue;
+            statusByKey[makeHistoryStatusKey_(dateText, orderId)] = status;
+        } catch (_) {
+            // 同期失敗時は履歴を保持する。
+        }
+    }
+
+    const next = filterOutCanceledHistoryEntries_(orderHistory, statusByKey);
+    if (next.length === orderHistory.length) return;
+    orderHistory.length = 0;
+    orderHistory.push(...next);
+    saveHistoryToStorage();
+}
+
 async function waitOrderAccepted(orderId, dateText, options = {}) {
     const timeoutMs = Math.max(
         500,
@@ -1006,7 +1087,13 @@ async function submitOrder() {
     if (!sentSuccessfully) return;
 
     loadHistoryFromStorage();
-    orderHistory.push({ table: tableNumber, items, total });
+    orderHistory.push({
+        table: tableNumber,
+        items,
+        total,
+        orderId: payload.orderId,
+        date: dateText
+    });
     saveHistoryToStorage();
     renderHistory();
 

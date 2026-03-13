@@ -139,6 +139,28 @@ function updateCheckoutBadge(count) {
   checkoutTabBadge.classList.add("hidden");
 }
 
+function countCheckoutWaitingGroups_(groups) {
+  if (
+    typeof window !== "undefined" &&
+    window.ManuSharedLogic &&
+    typeof window.ManuSharedLogic.countCheckoutWaitingGroups === "function"
+  ) {
+    return window.ManuSharedLogic.countCheckoutWaitingGroups(groups);
+  }
+  const list = Array.isArray(groups) ? groups : [];
+  let count = 0;
+  for (let i = 0; i < list.length; i++) {
+    const g = list[i] || {};
+    const status = String(g.status || "").trim();
+    if (status === "会計済") continue;
+    const total = Number(g.groupTotal) || 0;
+    const orderCount = Number(g.orderCount) || 0;
+    if (total <= 0 && orderCount <= 0 && status !== "未確認") continue;
+    count++;
+  }
+  return count;
+}
+
 function updateOrdersSectionTitles(pendingCount, historyCount) {
   if (ordersPendingTitleEl) {
     ordersPendingTitleEl.textContent = `対応中（未確認） ${Math.max(0, Number(pendingCount) || 0)}件`;
@@ -725,7 +747,7 @@ async function loadOrders() {
     if (summary && summary.result === "OK") {
       const summaryGroups = summary.groups || [];
       groupLabelMap = buildGroupLabelMapFromGroups(summaryGroups);
-      const checkoutWaiting = summaryGroups.filter((g) => String(g && g.status || "") !== "会計済").length;
+      const checkoutWaiting = countCheckoutWaitingGroups_(summaryGroups);
       updateCheckoutBadge(checkoutWaiting);
     }
 
