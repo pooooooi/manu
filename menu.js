@@ -689,6 +689,15 @@ function showOptions(item) {
     }
     if (addWithoutOptionsBtn) {
         addWithoutOptionsBtn.style.display = "inline-block";
+        if (optionCount > 0) {
+            addWithoutOptionsBtn.textContent = "オプションなしで注文リストに追加";
+            addWithoutOptionsBtn.classList.remove("option-action-primary");
+            addWithoutOptionsBtn.classList.add("option-action-secondary");
+        } else {
+            addWithoutOptionsBtn.textContent = "注文リストに追加";
+            addWithoutOptionsBtn.classList.remove("option-action-secondary");
+            addWithoutOptionsBtn.classList.add("option-action-primary");
+        }
     }
     if (optionCount === 0) {
         optionList.textContent = "この商品はオプションを選べません。";
@@ -703,7 +712,12 @@ function closeModal() {
     const optionImageWrap = document.getElementById("optionImageWrap");
     const optionImage = document.getElementById("optionImage");
     if (addOptionsBtn) addOptionsBtn.style.display = "inline-block";
-    if (addWithoutOptionsBtn) addWithoutOptionsBtn.style.display = "inline-block";
+    if (addWithoutOptionsBtn) {
+        addWithoutOptionsBtn.style.display = "inline-block";
+        addWithoutOptionsBtn.textContent = "注文リストに追加";
+        addWithoutOptionsBtn.classList.remove("option-action-primary");
+        addWithoutOptionsBtn.classList.add("option-action-secondary");
+    }
     if (optionImageWrap) optionImageWrap.classList.remove("is-visible");
     if (optionImage) {
         optionImage.removeAttribute("src");

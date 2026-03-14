@@ -24,7 +24,7 @@ window.APP_CONFIG = {
     staffJsonpTimeoutMs: 5000,
     staffVerifyTimeoutMs: 7000,
     staffVerifyPollIntervalMs: 350,
-    staffAutoRefreshIntervalMs: 2000,
+    staffAutoRefreshIntervalMs: 4000,
     // 新規注文アラート（スタッフ画面）
     staffNewOrderSoundEnabled: 1,
     staffDesktopNotificationEnabled: 1,

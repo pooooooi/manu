@@ -16,7 +16,7 @@ const verifyPollIntervalMs = Math.max(
 );
 const autoRefreshIntervalMs = Math.max(
   2000,
-  Number.parseInt(String(appConfig.staffAutoRefreshIntervalMs || "2000"), 10) || 2000
+  Number.parseInt(String(appConfig.staffAutoRefreshIntervalMs || "4000"), 10) || 4000
 );
 
 const dateInput = document.getElementById("dateInput");
@@ -110,7 +110,11 @@ async function getHistoryHintIfNeeded(dateText, totalCount) {
 }
 
 function setStatus(message) {
-  statusText.textContent = message;
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  statusText.textContent = `${message} / 最終更新 ${hh}:${mm}:${ss}`;
 }
 
 function updateUnconfirmedBadge(count) {
@@ -342,6 +346,23 @@ function toStaffStatusLabel(status) {
   return s || "-";
 }
 
+function formatYen(value) {
+  return `${(Number(value) || 0).toLocaleString("ja-JP")}円`;
+}
+
+function getStatusPillClass(status) {
+  const s = String(status || "").trim();
+  if (s === "未確認") return "pill-unconfirmed";
+  if (s === "会計済") return "pill-paid";
+  if (s === "取消済") return "pill-cancelled";
+  return "pill-confirmed";
+}
+
+function renderStatusPill(status) {
+  const s = String(status || "").trim();
+  return `<span class="status-pill ${getStatusPillClass(s)}">${escapeHtml(toStaffStatusLabel(s))}</span>`;
+}
+
 function renderTechnicalMeta(orderId, groupId) {
   if (!showTechnicalIds) return "";
   return `<p class="meta">管理用: 注文ID ${escapeHtml(orderId)} / グループID ${escapeHtml(groupId)}</p>`;
@@ -456,6 +477,11 @@ function jsonpFetch(url) {
   });
 }
 
+function stripUnitPriceText(itemsText) {
+  // スタッフ確認では「単価」情報を省略して可読性を優先する。
+  return String(itemsText || "").replace(/\s*[（(]単価[^）)]*[）)]/g, "");
+}
+
 function renderOrders(orders) {
   if (!orders || orders.length === 0) {
     ordersEl.innerHTML = '<div class="empty">未確認の注文はありません。</div>';
@@ -464,19 +490,23 @@ function renderOrders(orders) {
 
   ordersEl.innerHTML = orders
     .map((o) => {
-      const items = escapeHtml(o.items).replace(/,\s*/g, "\n");
+      const items = escapeHtml(stripUnitPriceText(o.items)).replace(/,\s*/g, "\n");
       const groupLabel = getGroupLabel(o.table, o.groupId);
       const pending = getPendingOrderAction(o.orderId, o.table);
       const displayOrderNo = toDisplayOrderNo(o.orderId);
       return `
-        <section class="card">
-          <p class="meta">${escapeHtml(o.timestamp)} / ${escapeHtml(groupLabel)}</p>
+        <section class="card card-urgent">
+          <div class="card-head">
+            <p class="card-title">${escapeHtml(groupLabel)}</p>
+            ${renderStatusPill("未確認")}
+          </div>
+          <p class="meta">注文時刻: ${escapeHtml(o.timestamp)}</p>
           <p class="meta">注文No: ${escapeHtml(displayOrderNo)} / テーブル ${escapeHtml(o.table)}</p>
-          <p class="meta">現在グループ計: ${Number(o.groupTotal || 0)}円</p>
+          <p class="meta">現在グループ計: ${formatYen(o.groupTotal)}</p>
           ${renderTechnicalMeta(o.orderId, o.groupId)}
           <p class="items">${items}</p>
           <div class="row">
-            <span class="subtotal">${Number(o.subtotal || 0)}円</span>
+            <span class="subtotal">今回小計 ${formatYen(o.subtotal)}</span>
             <div class="actions">
               <button
                 class="cancel-btn"
@@ -510,18 +540,22 @@ function renderConfirmedOrders(orders) {
 
   confirmedOrdersEl.innerHTML = orders
     .map((o) => {
-      const items = escapeHtml(o.items).replace(/,\s*/g, "\n");
+      const items = escapeHtml(stripUnitPriceText(o.items)).replace(/,\s*/g, "\n");
       const groupLabel = getGroupLabel(o.table, o.groupId);
       const displayOrderNo = toDisplayOrderNo(o.orderId);
+      const status = String(o.status || "確認済").trim();
       return `
         <section class="card">
-          <p class="meta">${escapeHtml(o.timestamp)} / ${escapeHtml(groupLabel)}</p>
+          <div class="card-head">
+            <p class="card-title">${escapeHtml(groupLabel)}</p>
+            ${renderStatusPill(status)}
+          </div>
+          <p class="meta">${escapeHtml(o.timestamp)}</p>
           <p class="meta">注文No: ${escapeHtml(displayOrderNo)} / テーブル ${escapeHtml(o.table)}</p>
-          <p class="meta">状態: ${escapeHtml(toStaffStatusLabel(o.status || "確認済"))}</p>
           ${renderTechnicalMeta(o.orderId, o.groupId)}
           <p class="items">${items}</p>
           <div class="row">
-            <span class="subtotal">${Number(o.subtotal || 0)}円</span>
+            <span class="subtotal">小計 ${formatYen(o.subtotal)}</span>
           </div>
         </section>
       `;
@@ -539,17 +573,20 @@ function renderGroups(groups) {
     .map((g) => {
       const groupLabel = getGroupLabel(g.table, g.groupId);
       const pending = getPendingGroupAction(g.table, g.groupId);
+      const status = String(g.status || "").trim() || "確認済";
+      const cardClass = status === "未確認" ? "card card-urgent" : "card";
       return `
-        <section class="card">
-          <p class="meta">${escapeHtml(groupLabel)}</p>
+        <section class="${cardClass}">
+          <div class="card-head">
+            <p class="card-title">${escapeHtml(groupLabel)}</p>
+            ${renderStatusPill(status)}
+          </div>
           <p class="meta">最終注文: ${escapeHtml(g.lastOrderAt)} / 経過 ${Number(g.elapsedMin || 0)}分</p>
-          <p class="meta">注文数: ${Number(g.orderCount || 0)} / 状態: ${escapeHtml(
-            toStaffStatusLabel(g.status)
-          )}</p>
+          <p class="meta">注文数: ${Number(g.orderCount || 0)}</p>
           ${showTechnicalIds ? `<p class="meta">管理用グループID: ${escapeHtml(g.groupId)}</p>` : ""}
-          <p class="items">${escapeHtml(g.items || "").replace(/\n/g, "<br>") || "注文内容なし"}</p>
+          <p class="items">${escapeHtml(stripUnitPriceText(g.items || "")).replace(/\n/g, "<br>") || "注文内容なし"}</p>
           <div class="row">
-            <span class="subtotal">合計 ${Number(g.groupTotal || 0)}円</span>
+            <span class="subtotal">合計 ${formatYen(g.groupTotal)}</span>
             <div class="actions">
               <button
                 class="adjust-btn"
@@ -628,11 +665,14 @@ function renderTableSummaries(groups) {
         t.unconfirmedGroups > 0 ? ` / 未確認グループ ${Number(t.unconfirmedGroups)}件` : "";
       return `
         <section class="card">
-          <p class="meta">テーブル ${escapeHtml(t.table)} 合算</p>
+          <div class="card-head">
+            <p class="card-title">テーブル ${escapeHtml(t.table)} 合算</p>
+            ${t.unconfirmedGroups > 0 ? '<span class="status-pill pill-unconfirmed">未確認あり</span>' : ""}
+          </div>
           <p class="meta">グループ数: ${Number(t.groupCount)} / 注文数: ${Number(t.orderCount)}${caution}</p>
           <p class="meta">最終注文: ${escapeHtml(t.lastOrderAt || "-")}</p>
           <div class="row">
-            <span class="subtotal">合計 ${Number(t.total)}円</span>
+            <span class="subtotal">合計 ${formatYen(t.total)}</span>
             <button
               class="table-pay-btn"
               data-action="pay-table"
@@ -660,17 +700,19 @@ function renderPaidGroups(groups) {
     .map((g) => {
       const groupLabel = getGroupLabel(g.table, g.groupId);
       const pending = getPendingGroupAction(g.table, g.groupId);
+      const status = String(g.status || "").trim() || "会計済";
       return `
         <section class="card">
-          <p class="meta">${escapeHtml(groupLabel)}</p>
+          <div class="card-head">
+            <p class="card-title">${escapeHtml(groupLabel)}</p>
+            ${renderStatusPill(status)}
+          </div>
           <p class="meta">最終注文: ${escapeHtml(g.lastOrderAt)} / 経過 ${Number(g.elapsedMin || 0)}分</p>
-          <p class="meta">注文数: ${Number(g.orderCount || 0)} / 状態: ${escapeHtml(
-            toStaffStatusLabel(g.status)
-          )}</p>
+          <p class="meta">注文数: ${Number(g.orderCount || 0)}</p>
           ${showTechnicalIds ? `<p class="meta">管理用グループID: ${escapeHtml(g.groupId)}</p>` : ""}
-          <p class="items">${escapeHtml(g.items || "").replace(/\n/g, "<br>") || "注文内容なし"}</p>
+          <p class="items">${escapeHtml(stripUnitPriceText(g.items || "")).replace(/\n/g, "<br>") || "注文内容なし"}</p>
           <div class="row">
-            <span class="subtotal">合計 ${Number(g.groupTotal || 0)}円</span>
+            <span class="subtotal">合計 ${formatYen(g.groupTotal)}</span>
             <button
               class="pay-btn"
               data-action="undo-paid"

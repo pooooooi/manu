@@ -303,20 +303,38 @@ header > span {
 
 .modal-header {
     position: relative;
-    height: 28px;
+    height: 38px;
 }
 
 .close-btn {
     position: absolute;
     right: 0;
     top: 0;
-    width: 30px;
-    height: 30px;
+    width: 36px;
+    height: 36px;
     border-radius: 50%;
-    border: 1px solid #cfd5e0;
-    background: #fff;
-    color: #253349;
+    border: 1px solid #223248;
+    background: #223248;
+    color: #fff;
+    font-size: 22px;
+    line-height: 1;
+    font-weight: 700;
     cursor: pointer;
+    box-shadow: 0 4px 10px rgba(34, 50, 72, 0.26);
+    transition: transform 0.08s ease, background-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.close-btn:hover {
+    background: #1a2638;
+}
+
+.close-btn:active {
+    transform: translateY(1px);
+}
+
+.close-btn:focus-visible {
+    outline: 2px solid #7fb3ff;
+    outline-offset: 2px;
 }
 
 #optionTitle {
@@ -342,20 +360,48 @@ header > span {
     background: #e9edf3;
 }
 
-.simple-button {
-    border: 1px solid #cfd6e2;
-    border-radius: 10px;
-    background: #fff;
-    color: #223;
-    font-weight: 600;
-    padding: 9px 12px;
-    margin: 6px 0;
-    cursor: pointer;
+.option-action-buttons {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    margin-top: 10px;
 }
 
-.simple-button:hover {
-    border-color: var(--accent);
-    color: var(--accent);
+.option-action-btn {
+    border-radius: 12px;
+    font-weight: 700;
+    padding: 11px 12px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    box-shadow: 0 4px 12px rgba(31, 41, 55, 0.12);
+    transition: transform 0.08s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+
+.option-action-btn:active {
+    transform: translateY(1px);
+}
+
+.option-action-primary {
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #fff;
+    box-shadow: 0 6px 16px rgba(44, 117, 222, 0.28);
+}
+
+.option-action-primary:hover {
+    filter: brightness(1.05);
+}
+
+.option-action-secondary {
+    border: 1px solid #8ea4c8;
+    background: #eef4ff;
+    color: #1f3551;
+}
+
+.option-action-secondary:hover {
+    border-color: #728bb5;
+    background: #e3edff;
+    box-shadow: 0 6px 16px rgba(114, 139, 181, 0.24);
 }
 
 #toastContainer {

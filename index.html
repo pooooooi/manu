@@ -33,7 +33,7 @@
 
       <div id="orderModal">
         <div class="modal-header">
-          <button class="close-btn" onclick="toggleOrderModal()">×</button>
+          <button class="close-btn" type="button" aria-label="閉じる" onclick="toggleOrderModal()">×</button>
         </div>
         <h3>注文リスト</h3>
         <ul id="orderItems"></ul>
@@ -43,27 +43,28 @@
 
       <div id="historyModal">
         <div class="modal-header">
-          <button class="close-btn" onclick="toggleHistoryModal()">×</button>
+          <button class="close-btn" type="button" aria-label="閉じる" onclick="toggleHistoryModal()">×</button>
         </div>
         <h3>注文履歴</h3>
         <ul id="historyItems"></ul>
         <p>合計: <span id="historyTotal">0</span> 円</p>
-        <button id="clearHistoryBtn" class="danger-btn" onclick="clearHistory()">履歴をクリア</button>
       </div>
     </div>
 
     <div id="optionModal" class="modal">
       <div class="modal-content">
         <div class="modal-header">
-          <button class="close-btn" onclick="closeModal()">×</button>
+          <button class="close-btn" type="button" aria-label="閉じる" onclick="closeModal()">×</button>
         </div>
         <h3 id="optionTitle"></h3>
         <div id="optionImageWrap">
           <img id="optionImage" alt="" loading="lazy" referrerpolicy="no-referrer" />
         </div>
         <div id="optionList"></div>
-        <button id="addOptionsBtn" class="simple-button" onclick="addOptionsToOrder()">オプション付きで追加</button>
-        <button id="addWithoutOptionsBtn" class="simple-button" onclick="addItemWithoutOptions()">オプションなしで追加</button>
+        <div class="option-action-buttons">
+          <button id="addOptionsBtn" class="option-action-btn option-action-primary" onclick="addOptionsToOrder()">オプションを選んで注文リストに追加</button>
+          <button id="addWithoutOptionsBtn" class="option-action-btn option-action-secondary" onclick="addItemWithoutOptions()">注文リストに追加</button>
+        </div>
       </div>
     </div>
   </div>
