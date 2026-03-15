@@ -17,6 +17,7 @@
     for (let i = 0; i < list.length; i++) {
       const g = list[i] || {};
       const status = String(g.status || "").trim();
+      if (status === STATUS_CANCELLED) continue;
       if (status === STATUS_PAID) continue;
       const total = Number(g.groupTotal) || 0;
       const orderCount = Number(g.orderCount) || 0;

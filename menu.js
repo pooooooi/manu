@@ -26,11 +26,27 @@ const quickOrderAckPollIntervalMs = Math.max(
     120,
     Number.parseInt(String(appConfig.quickOrderAckPollIntervalMs || "250"), 10) || 250
 );
+const historyStatusSyncConcurrency = Math.max(
+    2,
+    Number.parseInt(String(appConfig.historyStatusSyncConcurrency || "8"), 10) || 8
+);
+const historyStatusCacheTtlMs = Math.max(
+    10000,
+    Number.parseInt(String(appConfig.historyStatusCacheTtlMs || "120000"), 10) || 120000
+);
 const immediateSubmitMode = String(appConfig.immediateSubmitMode || "1").trim() !== "0";
 const skipStorePreflightInImmediateMode =
     String(appConfig.skipStorePreflightInImmediateMode || "1").trim() !== "0";
 const skipGroupPreflightInImmediateMode =
     String(appConfig.skipGroupPreflightInImmediateMode || "1").trim() !== "0";
+const maxQtyPerItem = Math.max(
+    1,
+    Number.parseInt(String(appConfig.maxQtyPerItem || "10"), 10) || 10
+);
+const highQtyConfirmThreshold = Math.max(
+    2,
+    Number.parseInt(String(appConfig.highQtyConfirmThreshold || "4"), 10) || 4
+);
 
 let allMenuItems = [];
 let selectedCategory = "";
@@ -44,6 +60,8 @@ const rawTableNumberFromUrl = String(urlParams.get("table") || "").trim();
 const tableNumberFromUrl = normalizeTableNumber(rawTableNumberFromUrl);
 const rawTableSigFromUrl = String(urlParams.get("sig") || "").trim();
 const tableSigFromUrl = normalizeTableSignature(rawTableSigFromUrl);
+const historyStatusCache = Object.create(null);
+let historySyncPromise = null;
 
 function blockApp(message) {
     document.body.innerHTML = `<h2 style="color:#b91c1c;text-align:center;margin:100px 16px;font-family:sans-serif;">${message}</h2>`;
@@ -189,8 +207,17 @@ function getStorageKey() {
     return `orders-${tableNumberFromUrl}`;
 }
 
-function getHistoryKey() {
+function getLegacyHistoryKey() {
     return `order-history-${tableNumberFromUrl}`;
+}
+
+function getHistoryMigrationFlagKey() {
+    return `order-history-migrated-${tableNumberFromUrl}`;
+}
+
+function getHistoryKey(groupIdRaw) {
+    const groupId = normalizeGroupId(groupIdRaw) || getGroupId();
+    return `order-history-${tableNumberFromUrl}-${groupId}`;
 }
 
 function parseOrderName(name) {
@@ -206,7 +233,7 @@ function parseOrderName(name) {
 }
 
 function normalizeOrderEntry(name, entry) {
-    const count = Math.max(0, toNumber(entry.count));
+    const count = Math.min(maxQtyPerItem, Math.max(0, toNumber(entry.count)));
     const price = Math.max(0, toNumber(entry.price));
     const parsed = parseOrderName(name);
     const itemName = String(entry.itemName || parsed.itemName || "").trim();
@@ -464,7 +491,9 @@ function loadOrdersFromStorage() {
     Object.keys(orders).forEach((key) => delete orders[key]);
     if (!storedOrders || typeof storedOrders !== "object" || Array.isArray(storedOrders)) return;
     Object.entries(storedOrders).forEach(([name, entry]) => {
-        orders[name] = normalizeOrderEntry(name, entry || {});
+        const normalized = normalizeOrderEntry(name, entry || {});
+        if (normalized.count <= 0) return;
+        orders[name] = normalized;
     });
 }
 
@@ -473,15 +502,44 @@ function saveOrdersToStorage() {
 }
 
 function loadHistoryFromStorage() {
-    const storedHistory = readJsonStorage(sessionStorage, getHistoryKey(), []);
+    const currentGroupId = getGroupId();
+    const storedHistory = readJsonStorage(sessionStorage, getHistoryKey(currentGroupId), []);
+    let source = storedHistory;
+
+    const migrated = sessionStorage.getItem(getHistoryMigrationFlagKey()) === "1";
+    if ((!Array.isArray(source) || source.length === 0) && currentGroupId && !migrated) {
+        const legacy = readJsonStorage(sessionStorage, getLegacyHistoryKey(), []);
+        if (Array.isArray(legacy) && legacy.length > 0) {
+            source = legacy
+                .filter((entry) => {
+                    const gid = normalizeGroupId(entry && entry.groupId);
+                    if (!gid) return true;
+                    return gid === currentGroupId;
+                })
+                .map((entry) => ({
+                    ...(entry || {}),
+                    groupId: normalizeGroupId(entry && entry.groupId) || currentGroupId
+                }));
+            if (source.length > 0) {
+                sessionStorage.setItem(getHistoryKey(currentGroupId), JSON.stringify(source));
+            }
+            sessionStorage.setItem(getHistoryMigrationFlagKey(), "1");
+        }
+    }
+
     orderHistory.length = 0;
-    if (Array.isArray(storedHistory)) {
-        orderHistory.push(...storedHistory);
+    if (Array.isArray(source)) {
+        orderHistory.push(...source);
     }
 }
 
 function saveHistoryToStorage() {
-    sessionStorage.setItem(getHistoryKey(), JSON.stringify(orderHistory));
+    const currentGroupId = getGroupId();
+    const normalized = orderHistory.map((entry) => ({
+        ...(entry || {}),
+        groupId: normalizeGroupId(entry && entry.groupId) || currentGroupId
+    }));
+    sessionStorage.setItem(getHistoryKey(currentGroupId), JSON.stringify(normalized));
 }
 
 function renderCategories(items) {
@@ -562,19 +620,59 @@ function renderOrder() {
     let total = 0;
     let itemCount = 0;
 
-    Object.entries(orders).forEach(([name, order]) => {
+    const entries = Object.entries(orders);
+    if (entries.length === 0) {
+        const empty = document.createElement("li");
+        empty.className = "order-empty";
+        empty.textContent = "注文リストは空です。";
+        list.appendChild(empty);
+    }
+
+    entries.forEach(([name, order]) => {
         const count = toNumber(order.count);
         const price = toNumber(order.price);
+        const lineTotal = price * count;
         const li = document.createElement("li");
-        li.textContent = `${name} x ${count} = ${price * count} 円`;
+        li.className = "order-line-item";
+
+        const main = document.createElement("div");
+        main.className = "order-line-main";
+        const nameEl = document.createElement("span");
+        nameEl.className = "order-line-name";
+        nameEl.textContent = String(name || "");
+        const metaEl = document.createElement("span");
+        metaEl.className = "order-line-meta";
+        metaEl.textContent = `${count}点 / ${lineTotal}円`;
+        main.appendChild(nameEl);
+        main.appendChild(metaEl);
+        li.appendChild(main);
+
+        const controls = document.createElement("div");
+        controls.className = "order-line-controls";
 
         const minusBtn = document.createElement("button");
         minusBtn.type = "button";
-        minusBtn.textContent = "-";
+        minusBtn.textContent = "−";
+        minusBtn.className = "order-line-minus";
         minusBtn.addEventListener("click", () => decreaseItem(name));
-        li.appendChild(minusBtn);
+        controls.appendChild(minusBtn);
 
-        total += price * count;
+        const qtyEl = document.createElement("span");
+        qtyEl.className = "order-line-qty";
+        qtyEl.textContent = String(count);
+        controls.appendChild(qtyEl);
+
+        const plusBtn = document.createElement("button");
+        plusBtn.type = "button";
+        plusBtn.textContent = "+";
+        plusBtn.className = "order-line-plus";
+        plusBtn.disabled = count >= maxQtyPerItem;
+        plusBtn.addEventListener("click", () => increaseItem(name));
+        controls.appendChild(plusBtn);
+
+        li.appendChild(controls);
+
+        total += lineTotal;
         itemCount += count;
         list.appendChild(li);
     });
@@ -585,24 +683,240 @@ function renderOrder() {
     badge.style.display = "inline-block";
 }
 
+function formatHistoryDateLabel_(entry) {
+    const createdAt = String(entry && entry.createdAt || "").trim();
+    if (createdAt) {
+        const d = new Date(createdAt);
+        if (!Number.isNaN(d.getTime())) {
+            return new Intl.DateTimeFormat("ja-JP", {
+                timeZone: "Asia/Tokyo",
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit"
+            }).format(d);
+        }
+    }
+    return String(entry && entry.date || "").trim();
+}
+
+function formatHistoryOrderIdLabel_(orderId) {
+    const id = String(orderId || "").trim();
+    if (!id) return "";
+    return `注文ID: ${id.slice(-8)}`;
+}
+
+function buildHistoryMenuPriceMap_() {
+    const map = Object.create(null);
+    for (let i = 0; i < allMenuItems.length; i++) {
+        const item = allMenuItems[i] || {};
+        const name = String(item["商品名"] || "").trim();
+        if (!name) continue;
+        const options = Object.create(null);
+        for (let j = 1; j <= 10; j++) {
+            const optName = String(item[`オプション${j}`] || "").trim();
+            if (!optName) continue;
+            options[optName] = toNumber(item[`オプション${j}金額`]);
+        }
+        map[name] = {
+            basePrice: toNumber(item["金額"]),
+            options
+        };
+    }
+    return map;
+}
+
+function splitHistoryItemsText_(text) {
+    const input = String(text || "").trim();
+    if (!input) return [];
+    const chunks = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < input.length; i++) {
+        const ch = input[i];
+        if (ch === "（") depth++;
+        if (ch === "）" && depth > 0) depth--;
+        if (ch === "," && depth === 0) {
+            const part = input.slice(start, i).trim();
+            if (part) chunks.push(part);
+            start = i + 1;
+        }
+    }
+    const tail = input.slice(start).trim();
+    if (tail) chunks.push(tail);
+    return chunks;
+}
+
+function parseHistoryLineName_(name) {
+    const text = String(name || "").trim();
+    if (!text) return { itemName: "", options: [] };
+    const m = text.match(/^(.*?)（(.*)）$/);
+    if (!m) return { itemName: text, options: [] };
+    const itemName = String(m[1] || "").trim();
+    const options = String(m[2] || "")
+        .split(",")
+        .map((v) => String(v || "").trim())
+        .filter(Boolean);
+    return { itemName, options };
+}
+
+function normalizeHistoryLinesFromEntry_(entry) {
+    const lines = [];
+    const rawLines = Array.isArray(entry && entry.lines) ? entry.lines : [];
+    for (let i = 0; i < rawLines.length; i++) {
+        const row = rawLines[i] || {};
+        const name = String(row.name || "").trim();
+        const quantity = Math.max(0, toNumber(row.quantity));
+        if (!name || quantity <= 0) continue;
+        lines.push({
+            name,
+            quantity,
+            lineTotal: Math.max(0, toNumber(row.lineTotal)),
+            unitPrice: Math.max(0, toNumber(row.unitPrice))
+        });
+    }
+    if (lines.length > 0) return lines;
+
+    const fallbackItems = splitHistoryItemsText_(entry && entry.items);
+    for (let i = 0; i < fallbackItems.length; i++) {
+        const token = String(fallbackItems[i] || "").trim();
+        if (!token) continue;
+        const m = token.match(/^(.*?)\s*x\s*(\d+)$/i);
+        const name = String((m && m[1]) || token).trim();
+        const quantity = Math.max(1, toNumber((m && m[2]) || "1"));
+        lines.push({ name, quantity, lineTotal: 0, unitPrice: 0 });
+    }
+    return lines;
+}
+
+function resolveHistoryLineAmount_(line, menuPriceMap) {
+    const quantity = Math.max(0, toNumber(line && line.quantity));
+    if (quantity <= 0) return 0;
+
+    const explicitLineTotal = Math.max(0, toNumber(line && line.lineTotal));
+    if (explicitLineTotal > 0) return explicitLineTotal;
+
+    const explicitUnitPrice = Math.max(0, toNumber(line && line.unitPrice));
+    if (explicitUnitPrice > 0) return explicitUnitPrice * quantity;
+
+    const parsed = parseHistoryLineName_(line && line.name);
+    const menu = menuPriceMap[String(parsed.itemName || "").trim()];
+    if (!menu) return 0;
+
+    let unit = Math.max(0, toNumber(menu.basePrice));
+    const options = Array.isArray(parsed.options) ? parsed.options : [];
+    for (let i = 0; i < options.length; i++) {
+        const optName = String(options[i] || "").trim();
+        if (!optName) continue;
+        unit += Math.max(0, toNumber(menu.options && menu.options[optName]));
+    }
+    return unit * quantity;
+}
+
+function buildHistoryRowsForDisplay_(historyEntries, menuPriceMap) {
+    const aggregate = new Map();
+    let grandTotal = 0;
+
+    for (let i = historyEntries.length - 1; i >= 0; i--) {
+        const entry = historyEntries[i] || {};
+        const baseRows = normalizeHistoryLinesFromEntry_(entry);
+        if (baseRows.length === 0) continue;
+
+        const resolvedRows = baseRows.map((row) => ({
+            name: String(row.name || "").trim(),
+            quantity: Math.max(0, toNumber(row.quantity)),
+            amount: resolveHistoryLineAmount_(row, menuPriceMap)
+        }));
+
+        let knownSum = 0;
+        const unknownIndexes = [];
+        for (let j = 0; j < resolvedRows.length; j++) {
+            if (resolvedRows[j].amount > 0) {
+                knownSum += resolvedRows[j].amount;
+            } else {
+                unknownIndexes.push(j);
+            }
+        }
+
+        const entryTotal = Math.max(0, toNumber(entry.total));
+        if (unknownIndexes.length > 0 && entryTotal > 0) {
+            let remain = Math.max(0, entryTotal - knownSum);
+            const count = unknownIndexes.length;
+            const baseShare = count > 0 ? Math.floor(remain / count) : 0;
+            for (let j = 0; j < unknownIndexes.length; j++) {
+                const idx = unknownIndexes[j];
+                let share = baseShare;
+                if (remain > 0) {
+                    const extra = Math.min(remain - baseShare * (count - j), 1);
+                    if (extra > 0) share += extra;
+                }
+                resolvedRows[idx].amount = Math.max(0, share);
+                remain -= share;
+            }
+        }
+
+        const computedEntryTotal = resolvedRows.reduce((sum, row) => sum + Math.max(0, toNumber(row.amount)), 0);
+        grandTotal += entryTotal > 0 ? entryTotal : computedEntryTotal;
+
+        for (let j = 0; j < resolvedRows.length; j++) {
+            const row = resolvedRows[j];
+            if (!row.name || row.quantity <= 0) continue;
+            if (!aggregate.has(row.name)) {
+                aggregate.set(row.name, { name: row.name, quantity: 0, amount: 0 });
+            }
+            const current = aggregate.get(row.name);
+            current.quantity += row.quantity;
+            current.amount += Math.max(0, toNumber(row.amount));
+        }
+    }
+
+    return {
+        rows: Array.from(aggregate.values()),
+        total: grandTotal
+    };
+}
+
 function renderHistory() {
     const historyList = document.getElementById("historyItems");
     historyList.innerHTML = "";
-    let total = 0;
 
-    orderHistory.forEach((h) => {
+    const menuPriceMap = buildHistoryMenuPriceMap_();
+    const display = buildHistoryRowsForDisplay_(orderHistory, menuPriceMap);
+    const rows = display.rows;
+
+    if (rows.length === 0) {
+        const empty = document.createElement("li");
+        empty.className = "history-empty";
+        empty.textContent = "注文履歴はまだありません。";
+        historyList.appendChild(empty);
+        document.getElementById("historyTotal").textContent = "0";
+        return;
+    }
+
+    for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
         const li = document.createElement("li");
-        li.textContent = `テーブル${h.table}: ${h.items} 合計 ${h.total}円`;
-        historyList.appendChild(li);
-        total += toNumber(h.total);
-    });
+        li.className = "history-line-item";
 
-    document.getElementById("historyTotal").textContent = String(total);
+        const nameEl = document.createElement("span");
+        nameEl.className = "history-line-name";
+        nameEl.textContent = `${row.name} x ${Math.max(1, toNumber(row.quantity))}`;
+
+        const amountEl = document.createElement("strong");
+        amountEl.className = "history-line-total";
+        amountEl.textContent = `${Math.max(0, toNumber(row.amount))} 円`;
+
+        li.appendChild(nameEl);
+        li.appendChild(amountEl);
+        historyList.appendChild(li);
+    }
+
+    document.getElementById("historyTotal").textContent = String(Math.max(0, toNumber(display.total)));
 }
 
 function clearHistory() {
     if (!confirm("本当に履歴をクリアしますか？")) return;
-    sessionStorage.removeItem(getHistoryKey());
+    sessionStorage.removeItem(getHistoryKey(getGroupId()));
     orderHistory.length = 0;
     renderHistory();
     showToast("注文履歴をクリアしました。", "success");
@@ -618,6 +932,18 @@ function decreaseItem(name) {
     renderOrder();
 }
 
+function increaseItem(name) {
+    if (!orders[name]) return;
+    const next = toNumber(orders[name].count) + 1;
+    if (next > maxQtyPerItem) {
+        showToast(`1商品あたり最大 ${maxQtyPerItem} 点までです。`, "error");
+        return;
+    }
+    orders[name].count = next;
+    saveOrdersToStorage();
+    renderOrder();
+}
+
 function toggleOrderModal() {
     const modal = document.getElementById("orderModal");
     modal.style.display = modal.style.display === "block" ? "none" : "block";
@@ -627,14 +953,57 @@ async function toggleHistoryModal() {
     const modal = document.getElementById("historyModal");
     if (modal.style.display === "block") {
         modal.style.display = "none";
+        setHistorySyncStatus_("");
         return;
     }
-    await removeCanceledHistoryEntries();
+    loadHistoryFromStorage();
     renderHistory();
     modal.style.display = "block";
+    void syncHistoryAfterOpen_();
 }
 
 let selectedItem = null;
+
+function ensureOptionSelectionSummaryEl_() {
+    const optionList = document.getElementById("optionList");
+    if (!optionList) return null;
+    let el = document.getElementById("optionSelectionSummary");
+    if (el) return el;
+    el = document.createElement("p");
+    el.id = "optionSelectionSummary";
+    el.className = "option-selection-summary";
+    optionList.insertAdjacentElement("afterend", el);
+    return el;
+}
+
+function updateOptionSelectionSummary_() {
+    const summaryEl = ensureOptionSelectionSummaryEl_();
+    if (!summaryEl) return;
+    const basePrice = toNumber(selectedItem && selectedItem["金額"]);
+    const checkboxes = document.querySelectorAll('#optionList input[type="checkbox"]');
+    let selectedCount = 0;
+    let extra = 0;
+    checkboxes.forEach((cb) => {
+        const card = cb.closest(".option-item");
+        if (card) {
+            card.classList.toggle("is-selected", !!cb.checked);
+        }
+        if (!cb.checked) return;
+        selectedCount += 1;
+        extra += toNumber(cb.dataset.optionPrice);
+    });
+
+    const total = basePrice + extra;
+    if (checkboxes.length === 0) {
+        summaryEl.textContent = `合計 ${total}円`;
+        return;
+    }
+    if (selectedCount === 0) {
+        summaryEl.textContent = `オプション未選択 / 合計 ${total}円`;
+        return;
+    }
+    summaryEl.textContent = `選択 ${selectedCount}件 (+${extra}円) / 合計 ${total}円`;
+}
 
 function showOptions(item) {
     selectedItem = item;
@@ -670,27 +1039,40 @@ function showOptions(item) {
         const price = toNumber(item[`オプション${i}金額`]);
 
         const label = document.createElement("label");
+        label.className = "option-item";
         const input = document.createElement("input");
         input.type = "checkbox";
         input.value = `opt-${i}`;
         input.dataset.optionName = String(name || "");
         input.dataset.optionPrice = String(price);
+        input.addEventListener("change", updateOptionSelectionSummary_);
+
+        const textWrap = document.createElement("span");
+        textWrap.className = "option-item-text";
+        const nameEl = document.createElement("span");
+        nameEl.className = "option-item-name";
+        nameEl.textContent = String(name || "");
+        const priceEl = document.createElement("span");
+        priceEl.className = "option-item-price";
+        priceEl.textContent = `+${price}円`;
         label.appendChild(input);
-        label.appendChild(document.createTextNode(` ${name} (+${price}円)`));
+        textWrap.appendChild(nameEl);
+        textWrap.appendChild(priceEl);
+        label.appendChild(textWrap);
 
         optionList.appendChild(label);
-        optionList.appendChild(document.createElement("br"));
         optionCount++;
         i++;
     }
 
     if (addOptionsBtn) {
+        addOptionsBtn.textContent = "選択して追加";
         addOptionsBtn.style.display = optionCount > 0 ? "inline-block" : "none";
     }
     if (addWithoutOptionsBtn) {
         addWithoutOptionsBtn.style.display = "inline-block";
         if (optionCount > 0) {
-            addWithoutOptionsBtn.textContent = "オプションなしで注文リストに追加";
+            addWithoutOptionsBtn.textContent = "オプションなしで追加";
             addWithoutOptionsBtn.classList.remove("option-action-primary");
             addWithoutOptionsBtn.classList.add("option-action-secondary");
         } else {
@@ -702,6 +1084,7 @@ function showOptions(item) {
     if (optionCount === 0) {
         optionList.textContent = "この商品はオプションを選べません。";
     }
+    updateOptionSelectionSummary_();
 
     document.getElementById("optionModal").style.display = "flex";
 }
@@ -723,6 +1106,9 @@ function closeModal() {
         optionImage.removeAttribute("src");
         optionImage.alt = "";
     }
+    const summaryEl = document.getElementById("optionSelectionSummary");
+    if (summaryEl) summaryEl.textContent = "";
+    selectedItem = null;
     document.getElementById("optionModal").style.display = "none";
 }
 
@@ -758,7 +1144,12 @@ function addOptionsToOrder() {
             options: [...selectedNames]
         };
     } else {
-        orders[fullName].count = toNumber(orders[fullName].count) + 1;
+        const next = toNumber(orders[fullName].count) + 1;
+        if (next > maxQtyPerItem) {
+            showToast(`1商品あたり最大 ${maxQtyPerItem} 点までです。`, "error");
+            return;
+        }
+        orders[fullName].count = next;
     }
 
     saveOrdersToStorage();
@@ -780,7 +1171,12 @@ function addItemWithoutOptions() {
             options: []
         };
     } else {
-        orders[baseName].count = toNumber(orders[baseName].count) + 1;
+        const next = toNumber(orders[baseName].count) + 1;
+        if (next > maxQtyPerItem) {
+            showToast(`1商品あたり最大 ${maxQtyPerItem} 点までです。`, "error");
+            return;
+        }
+        orders[baseName].count = next;
     }
 
     saveOrdersToStorage();
@@ -867,6 +1263,103 @@ function makeHistoryStatusKey_(dateText, orderId) {
     return `${String(dateText || "").trim()}::${String(orderId || "").trim()}`;
 }
 
+function getHistoryStatusFromCache_(dateText, orderId) {
+    const key = makeHistoryStatusKey_(dateText, orderId);
+    const cache = historyStatusCache[key];
+    if (!cache) return "";
+    if ((Number(cache.expiresAt) || 0) <= Date.now()) {
+        delete historyStatusCache[key];
+        return "";
+    }
+    return String(cache.status || "").trim();
+}
+
+function setHistoryStatusCache_(dateText, orderId, status) {
+    const normalizedStatus = String(status || "").trim();
+    if (!normalizedStatus) return;
+    historyStatusCache[makeHistoryStatusKey_(dateText, orderId)] = {
+        status: normalizedStatus,
+        expiresAt: Date.now() + historyStatusCacheTtlMs
+    };
+}
+
+async function runWithConcurrency_(tasks, maxConcurrency, worker) {
+    const list = Array.isArray(tasks) ? tasks : [];
+    if (list.length === 0) return;
+    const concurrency = Math.max(1, toNumber(maxConcurrency));
+    let cursor = 0;
+    const workers = [];
+    const runnerCount = Math.min(concurrency, list.length);
+    for (let i = 0; i < runnerCount; i++) {
+        workers.push((async () => {
+            while (true) {
+                const idx = cursor;
+                cursor += 1;
+                if (idx >= list.length) break;
+                await worker(list[idx], idx);
+            }
+        })());
+    }
+    await Promise.all(workers);
+}
+
+function ensureHistorySyncStatusElement_() {
+    const modal = document.getElementById("historyModal");
+    if (!modal) return null;
+    let status = document.getElementById("historySyncStatus");
+    if (status) return status;
+
+    status = document.createElement("p");
+    status.id = "historySyncStatus";
+    status.className = "history-sync-status";
+    const historyList = document.getElementById("historyItems");
+    if (historyList && historyList.parentNode === modal) {
+        modal.insertBefore(status, historyList);
+    } else {
+        modal.appendChild(status);
+    }
+    return status;
+}
+
+function setHistorySyncStatus_(message, type = "info") {
+    const status = ensureHistorySyncStatusElement_();
+    if (!status) return;
+    const text = String(message || "").trim();
+    if (!text) {
+        status.textContent = "";
+        status.className = "history-sync-status";
+        status.style.display = "none";
+        return;
+    }
+    status.textContent = text;
+    status.className = `history-sync-status ${type}`;
+    status.style.display = "block";
+}
+
+function syncHistoryAfterOpen_() {
+    if (historySyncPromise) return historySyncPromise;
+    setHistorySyncStatus_("履歴を同期中...", "info");
+    historySyncPromise = removeCanceledHistoryEntries()
+        .then((result) => {
+            if (result.changed) {
+                renderHistory();
+            }
+            if (result.removed > 0) {
+                setHistorySyncStatus_(`取消済み ${result.removed} 件を履歴から除外しました。`, "success");
+            } else {
+                setHistorySyncStatus_("履歴は最新です。", "info");
+            }
+        })
+        .catch(() => {
+            setHistorySyncStatus_("履歴同期に失敗しました。", "error");
+        })
+        .finally(() => {
+            historySyncPromise = null;
+            window.setTimeout(() => setHistorySyncStatus_(""), 1500);
+        });
+    return historySyncPromise;
+}
+
 function filterOutCanceledHistoryEntries_(entries, statusByKey) {
     if (
         typeof window !== "undefined" &&
@@ -896,29 +1389,68 @@ function filterOutCanceledHistoryEntries_(entries, statusByKey) {
 
 async function removeCanceledHistoryEntries() {
     loadHistoryFromStorage();
-    if (orderHistory.length === 0) return;
+    if (orderHistory.length === 0) {
+        return { changed: false, removed: 0, checked: 0, fromCache: 0, errors: 0 };
+    }
 
     const statusByKey = {};
+    const targets = [];
+    let fromCache = 0;
     for (let i = 0; i < orderHistory.length; i++) {
         const entry = orderHistory[i] || {};
         const orderId = String(entry.orderId || "").trim();
         const dateText = String(entry.date || "").trim();
         if (!orderId || !dateText) continue;
+        const key = makeHistoryStatusKey_(dateText, orderId);
+        if (Object.prototype.hasOwnProperty.call(statusByKey, key)) continue;
 
-        try {
-            const status = await fetchOrderStatusForHistory(orderId, dateText, entry.table);
-            if (!status) continue;
-            statusByKey[makeHistoryStatusKey_(dateText, orderId)] = status;
-        } catch (_) {
-            // 同期失敗時は履歴を保持する。
+        const cached = getHistoryStatusFromCache_(dateText, orderId);
+        if (cached) {
+            statusByKey[key] = cached;
+            fromCache += 1;
+            continue;
         }
+        targets.push({
+            key,
+            orderId,
+            dateText,
+            table: String(entry.table || "").trim()
+        });
     }
 
+    let errors = 0;
+    await runWithConcurrency_(targets, historyStatusSyncConcurrency, async (target) => {
+        try {
+            const status = await fetchOrderStatusForHistory(target.orderId, target.dateText, target.table);
+            if (!status) return;
+            statusByKey[target.key] = status;
+            setHistoryStatusCache_(target.dateText, target.orderId, status);
+        } catch (_) {
+            errors += 1;
+        }
+    });
+
     const next = filterOutCanceledHistoryEntries_(orderHistory, statusByKey);
-    if (next.length === orderHistory.length) return;
+    const removed = Math.max(0, orderHistory.length - next.length);
+    if (removed === 0) {
+        return {
+            changed: false,
+            removed: 0,
+            checked: targets.length,
+            fromCache: fromCache,
+            errors: errors
+        };
+    }
     orderHistory.length = 0;
     orderHistory.push(...next);
     saveHistoryToStorage();
+    return {
+        changed: true,
+        removed: removed,
+        checked: targets.length,
+        fromCache: fromCache,
+        errors: errors
+    };
 }
 
 async function waitOrderAccepted(orderId, dateText, options = {}) {
@@ -975,120 +1507,181 @@ async function verifyOrderAcceptedInBackground(payload) {
 
 async function submitOrder() {
     if (isSubmitting) return;
-    if (!navigator.onLine) {
-        showToast("オフラインのため送信できません。通信を確認してください。", "error");
-        return;
-    }
-    const tableNumber = document.getElementById("tableNumber").value;
-    if (!tableNumber) {
-        showToast("テーブル番号が見つかりません。", "error");
-        return;
-    }
-    if (!confirm("注文を送信します。よろしいですか？")) return;
-
-    loadOrdersFromStorage();
-    const items = Object.entries(orders)
-        .map(([name, { count }]) => `${name} x ${toNumber(count)}`)
-        .join(", ");
-    const total = toNumber(document.getElementById("totalPrice").textContent);
-    if (!items) {
-        showToast("注文が空です。", "error");
-        return;
-    }
-    const orderLines = Object.entries(orders).map(([displayName, entry]) => ({
-        displayName,
-        itemName: String(entry.itemName || "").trim(),
-        options: Array.isArray(entry.options) ? entry.options : [],
-        quantity: Math.max(1, toNumber(entry.count))
-    }));
-
-    let activeGroupId = getGroupId();
-    if (immediateSubmitMode) {
-        try {
-            if (!skipStorePreflightInImmediateMode) {
-                await ensureStoreOpenForOrder();
-            }
-            // 会計済みの古いgroupIdへ誤送信されると、会計待ち金額が過去分と混ざる。
-            // そのため immediate mode でも group の状態確認だけは必ず実施する。
-            activeGroupId = await ensureCurrentGroupIsActive(tableNumber);
-        } catch (_) {
-            showToast("現在は注文を受け付けていません。", "error");
-            return;
-        }
-    } else {
-        try {
-            const preflight = await Promise.all([
-                ensureStoreOpenForOrder(),
-                ensureCurrentGroupIsActive(tableNumber)
-            ]);
-            activeGroupId = preflight[1];
-        } catch (_) {
-            showToast("現在は注文を受け付けていません。", "error");
-            return;
-        }
-    }
-
-    const dateText = currentDateText();
-    const payload = {
-        orderId: `o-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
-        date: dateText,
-        table: tableNumber,
-        items,
-        total,
-        groupId: activeGroupId,
-        sig: tableSigFromUrl,
-        orderLines
-    };
-
     const confirmBtn = document.getElementById("confirmOrderBtn");
     const originalLabel = confirmBtn ? confirmBtn.textContent : "";
     const useImmediateMode = immediateSubmitMode;
-    let sentSuccessfully = false;
-
+    isSubmitting = true;
     try {
-        isSubmitting = true;
         if (confirmBtn) {
             confirmBtn.disabled = true;
-            confirmBtn.textContent = "送信中...";
+            confirmBtn.textContent = "確認中...";
         }
-        if (resendQueueEnabled) {
-            // 先にキューへ退避してから送ることで、送信途中失敗でも注文を失わない。
-            enqueueOrder(payload);
+
+        if (!navigator.onLine) {
+            showToast("オフラインのため送信できません。通信を確認してください。", "error");
+            return;
         }
-        if (useImmediateMode) {
-            // 非同期送信: UIは即時反映し、検証はバックグラウンドで実施。
-            sendOrderPayload(payload)
-                .then(() => verifyOrderAcceptedInBackground(payload))
-                .catch(() => {
-                    if (resendQueueEnabled) {
-                        flushSendQueueInBackground();
-                        return;
-                    }
-                    showToast("送信に失敗しました。通信を確認して再送してください。", "error");
-                });
+        const tableNumber = document.getElementById("tableNumber").value;
+        if (!tableNumber) {
+            showToast("テーブル番号が見つかりません。", "error");
+            return;
+        }
+
+        loadOrdersFromStorage();
+        const items = Object.entries(orders)
+            .map(([name, { count }]) => `${name} x ${toNumber(count)}`)
+            .join(", ");
+        const total = toNumber(document.getElementById("totalPrice").textContent);
+        if (!items) {
+            showToast("注文が空です。", "error");
+            return;
+        }
+        const confirmationLines = Object.entries(orders)
+            .map(([name, { count }]) => `・${name} x ${toNumber(count)}`)
+            .join("\n");
+        const totalQty = Object.values(orders).reduce((sum, entry) => sum + Math.max(0, toNumber(entry && entry.count)), 0);
+        const totalPrice = toNumber(document.getElementById("totalPrice").textContent);
+        const confirmMessage =
+            "以下の内容で送信します。\n\n" +
+            `${confirmationLines}\n\n` +
+            `合計点数: ${totalQty}点\n` +
+            `合計金額: ${totalPrice}円`;
+        if (!confirm(confirmMessage)) return;
+        const hasHighQtyLine = Object.values(orders).some(
+            (entry) => Math.max(0, toNumber(entry && entry.count)) >= highQtyConfirmThreshold
+        );
+        if (hasHighQtyLine) {
+            const extraMessage =
+                `${highQtyConfirmThreshold}点以上の注文が含まれています。\n` +
+                "数量に間違いがないか最終確認してください。";
+            if (!confirm(extraMessage)) return;
+        }
+        const orderLines = Object.entries(orders).map(([displayName, entry]) => ({
+            displayName,
+            itemName: String(entry.itemName || "").trim(),
+            options: Array.isArray(entry.options) ? entry.options : [],
+            quantity: Math.max(1, toNumber(entry.count))
+        }));
+
+        let activeGroupId = getGroupId();
+        if (immediateSubmitMode) {
+            try {
+                if (!skipStorePreflightInImmediateMode) {
+                    await ensureStoreOpenForOrder();
+                }
+                // 会計済みの古いgroupIdへ誤送信されると、会計待ち金額が過去分と混ざる。
+                // そのため immediate mode でも group の状態確認だけは必ず実施する。
+                activeGroupId = await ensureCurrentGroupIsActive(tableNumber);
+            } catch (_) {
+                showToast("現在は注文を受け付けていません。", "error");
+                return;
+            }
         } else {
-            await sendOrderPayload(payload);
-            const accepted = await waitOrderAccepted(payload.orderId, dateText, {
-                timeoutMs: quickOrderAckTimeoutMs,
-                pollIntervalMs: quickOrderAckPollIntervalMs
-            });
-            if (accepted) {
-                if (resendQueueEnabled) dequeueOrderById(payload.orderId);
-            } else {
-                throw new Error("order not accepted yet");
+            try {
+                const preflight = await Promise.all([
+                    ensureStoreOpenForOrder(),
+                    ensureCurrentGroupIsActive(tableNumber)
+                ]);
+                activeGroupId = preflight[1];
+            } catch (_) {
+                showToast("現在は注文を受け付けていません。", "error");
+                return;
             }
         }
-        sentSuccessfully = true;
-    } catch (error) {
-        console.error(error);
-        if (String(error && error.message || "").indexOf("store closed") >= 0) {
-            showToast("現在は注文を受け付けていません。", "error");
-        } else if (!resendQueueEnabled) {
-            showToast("送信確認ができませんでした。通信を確認して再送してください。", "error");
-        } else {
-            showToast("送信に失敗したため、再送キューに保存しました。", "error");
+
+        const dateText = currentDateText();
+        const payload = {
+            orderId: `o-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+            date: dateText,
+            table: tableNumber,
+            items,
+            total,
+            groupId: activeGroupId,
+            sig: tableSigFromUrl,
+            orderLines
+        };
+
+        if (confirmBtn) {
+            confirmBtn.textContent = "送信中...";
         }
-        return;
+
+        let sentSuccessfully = false;
+        try {
+            if (resendQueueEnabled) {
+                // 先にキューへ退避してから送ることで、送信途中失敗でも注文を失わない。
+                enqueueOrder(payload);
+            }
+            if (useImmediateMode) {
+                // 非同期送信: UIは即時反映し、検証はバックグラウンドで実施。
+                sendOrderPayload(payload)
+                    .then(() => verifyOrderAcceptedInBackground(payload))
+                    .catch(() => {
+                        if (resendQueueEnabled) {
+                            flushSendQueueInBackground();
+                            return;
+                        }
+                        showToast("送信に失敗しました。通信を確認して再送してください。", "error");
+                    });
+            } else {
+                await sendOrderPayload(payload);
+                const accepted = await waitOrderAccepted(payload.orderId, dateText, {
+                    timeoutMs: quickOrderAckTimeoutMs,
+                    pollIntervalMs: quickOrderAckPollIntervalMs
+                });
+                if (accepted) {
+                    if (resendQueueEnabled) dequeueOrderById(payload.orderId);
+                } else {
+                    throw new Error("order not accepted yet");
+                }
+            }
+            sentSuccessfully = true;
+        } catch (error) {
+            console.error(error);
+            if (String(error && error.message || "").indexOf("store closed") >= 0) {
+                showToast("現在は注文を受け付けていません。", "error");
+            } else if (!resendQueueEnabled) {
+                showToast("送信確認ができませんでした。通信を確認して再送してください。", "error");
+            } else {
+                showToast("送信に失敗したため、再送キューに保存しました。", "error");
+            }
+            return;
+        }
+
+        if (!sentSuccessfully) return;
+
+        const historyLines = Object.entries(orders).map(([name, entry]) => {
+            const quantity = Math.max(1, toNumber(entry && entry.count));
+            const unitPrice = Math.max(0, toNumber(entry && entry.price));
+            return {
+                name: String(name || "").trim(),
+                quantity,
+                unitPrice,
+                lineTotal: unitPrice * quantity
+            };
+        });
+        loadHistoryFromStorage();
+        orderHistory.push({
+            table: tableNumber,
+            groupId: activeGroupId,
+            items,
+            total,
+            orderId: payload.orderId,
+            date: dateText,
+            createdAt: new Date().toISOString(),
+            lines: historyLines
+        });
+        saveHistoryToStorage();
+        renderHistory();
+
+        sessionStorage.removeItem(getStorageKey());
+        Object.keys(orders).forEach((key) => delete orders[key]);
+        renderOrder();
+        toggleOrderModal();
+        if (useImmediateMode) {
+            showToast("注文を受け付けました。", "success");
+            return;
+        }
+        showToast("注文を送信しました。", "success");
     } finally {
         isSubmitting = false;
         if (confirmBtn) {
@@ -1097,29 +1690,6 @@ async function submitOrder() {
         }
         renderQueueBadge();
     }
-
-    if (!sentSuccessfully) return;
-
-    loadHistoryFromStorage();
-    orderHistory.push({
-        table: tableNumber,
-        items,
-        total,
-        orderId: payload.orderId,
-        date: dateText
-    });
-    saveHistoryToStorage();
-    renderHistory();
-
-    sessionStorage.removeItem(getStorageKey());
-    Object.keys(orders).forEach((key) => delete orders[key]);
-    renderOrder();
-    toggleOrderModal();
-    if (useImmediateMode) {
-        showToast("注文を受け付けました。", "success");
-        return;
-    }
-    showToast("注文を送信しました。", "success");
 }
 
 window.addEventListener("DOMContentLoaded", async () => {

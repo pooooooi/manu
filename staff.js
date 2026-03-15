@@ -156,6 +156,7 @@ function countCheckoutWaitingGroups_(groups) {
   for (let i = 0; i < list.length; i++) {
     const g = list[i] || {};
     const status = String(g.status || "").trim();
+    if (status === "取消済") continue;
     if (status === "会計済") continue;
     const total = Number(g.groupTotal) || 0;
     const orderCount = Number(g.orderCount) || 0;
@@ -758,15 +759,19 @@ async function loadOrders() {
     const cancelledUrl = `${endpoint}?action=getOrders&status=${encodeURIComponent(
       "取消済"
     )}&date=${encodeURIComponent(date)}&staffToken=${encodeURIComponent(staffToken)}`;
+    const activeSummaryUrl = `${endpoint}?action=getGroupSummary&status=${encodeURIComponent(
+      "active"
+    )}&date=${encodeURIComponent(date)}&staffToken=${encodeURIComponent(staffToken)}`;
     const summaryUrl = `${endpoint}?action=getGroupSummary&date=${encodeURIComponent(
       date
     )}&staffToken=${encodeURIComponent(staffToken)}`;
 
-    const [unconfirmedData, confirmedData, paidData, cancelledData, summary] = await Promise.all([
+    const [unconfirmedData, confirmedData, paidData, cancelledData, activeSummary, summary] = await Promise.all([
       jsonpFetch(unconfirmedUrl),
       jsonpFetch(confirmedUrl),
       jsonpFetch(paidUrl),
       jsonpFetch(cancelledUrl),
+      jsonpFetch(activeSummaryUrl).catch(() => null),
       jsonpFetch(summaryUrl).catch(() => null)
     ]);
     if (!unconfirmedData || unconfirmedData.result !== "OK") {
@@ -789,8 +794,11 @@ async function loadOrders() {
     if (summary && summary.result === "OK") {
       const summaryGroups = summary.groups || [];
       groupLabelMap = buildGroupLabelMapFromGroups(summaryGroups);
-      const checkoutWaiting = countCheckoutWaitingGroups_(summaryGroups);
-      updateCheckoutBadge(checkoutWaiting);
+    }
+    if (activeSummary && activeSummary.result === "OK") {
+      updateCheckoutBadge(Number(activeSummary.count || (activeSummary.groups || []).length || 0));
+    } else if (summary && summary.result === "OK") {
+      updateCheckoutBadge(countCheckoutWaitingGroups_(summary.groups || []));
     }
 
     const unconfirmedOrders = unconfirmedData.orders || [];
